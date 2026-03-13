@@ -9,12 +9,15 @@ let catalogRowsPromise = null
 function App() {
   const AUDIO_BASE_VOLUME = 0.5
   const AUDIO_FADE_OUT_MS = 450
+  const BACKGROUND_AUDIO_SRC = '/background_noise.mp3'
+  const BACKGROUND_AUDIO_VOLUME = 0.2
   const getIdleDescription = (lang) => (lang === 'cs' ? 'Otocte se doleva nebo doprava a prohlednete si obraz.' : 'Turn left or right to inspect a painting.')
   const mountRef = useRef(null)
   const motionBlurRef = useRef(null)
   const cursorLightRef = useRef(null)
   const debugHudRef = useRef(null)
   const audioRef = useRef(null)
+  const backgroundAudioRef = useRef(null)
   const audioFadeRafRef = useRef(0)
   const audioFadeTokenRef = useRef(0)
   const audioUnlockedRef = useRef(false)
@@ -42,26 +45,26 @@ function App() {
 
   const isCzech = language === 'cs'
   const uiText = {
-    title: isCzech ? 'Galerie Nekonecne Chodby' : 'Endless Hallway Gallery',
-    intro: isCzech ? 'Prozkoumejte galerii a obdivujte obrazy na stenach.' : 'Explore the gallery and admire the artwork on the walls.',
-    keyboardControls: isCzech ? 'Klavesove Ovladani:' : 'Keyboard Controls:',
-    moveForward: isCzech ? 'W - Dopredu' : 'W - Forward',
+    title: isCzech ? 'Nekonečná chodba' : 'Endless Hallway Gallery',
+    intro: isCzech ? 'Prozkoumejte galerii a obdivujte obrazy na stěnách' : 'Explore the gallery and admire the artwork on the walls.',
+    keyboardControls: isCzech ? 'Ovládání' : 'Keyboard Controls:',
+    moveForward: isCzech ? 'W - Dopředu' : 'W - Forward',
     moveBackward: isCzech ? 'S - Dozadu' : 'S - Backward',
-    turnLeft: isCzech ? 'Q - Otocit Doleva' : 'Q - Turn Left',
-    turnRight: isCzech ? 'E - Otocit Doprava' : 'E - Turn Right',
-    buttonTurnLeft: isCzech ? '<- Otocit Doleva' : '<- Turn Left',
-    buttonForward: isCzech ? '^ Dopredu' : '^ Forward',
-    buttonTurnRight: isCzech ? 'Otocit Doprava ->' : 'Turn Right ->',
-    buttonBackward: isCzech ? 'v Dozadu' : 'v Backward',
-    labelName: isCzech ? 'Nazev' : 'Name',
+    turnLeft: isCzech ? 'A - Doleva' : 'A - Turn Left',
+    turnRight: isCzech ? 'D - Doprava' : 'D - Turn Right',
+    buttonTurnLeft: isCzech ? 'Doleva' : 'Left',
+    buttonForward: isCzech ? 'Dopředu' : 'Forward',
+    buttonTurnRight: isCzech ? 'Doprava' : 'Right',
+    buttonBackward: isCzech ? 'Dozadu' : 'Backward',
+    labelName: isCzech ? 'Název' : 'Name',
     labelAuthor: isCzech ? 'Autor' : 'Author',
     labelYear: isCzech ? 'Rok' : 'Year',
     labelStyle: isCzech ? 'Styl' : 'Style',
     labelDescription: isCzech ? 'Popis' : 'Description',
-    unknown: isCzech ? 'Nezname' : 'Unknown',
-    noDescription: isCzech ? 'Popis neni k dispozici.' : 'No description available.',
-    close: isCzech ? 'Zavrit' : 'Close',
-    selectedPainting: isCzech ? 'Vybrany obraz' : 'Selected painting',
+    unknown: isCzech ? 'Neznámé' : 'Unknown',
+    noDescription: isCzech ? 'Popis není k dispozici.' : 'No description available.',
+    close: isCzech ? 'Zavřít' : 'Close',
+    selectedPainting: isCzech ? 'Vybraný obraz' : 'Selected painting',
     languageButton: isCzech ? 'Jazyk: CZ' : 'Language: EN',
   }
 
@@ -109,6 +112,54 @@ function App() {
     }
 
     audioFadeRafRef.current = requestAnimationFrame(tick)
+  }
+
+  function ensureBackgroundAudio() {
+    if (!backgroundAudioRef.current) {
+      const bgAudio = new Audio()
+      bgAudio.loop = true
+      bgAudio.volume = BACKGROUND_AUDIO_VOLUME
+      bgAudio.preload = 'auto'
+      bgAudio.src = new URL(BACKGROUND_AUDIO_SRC, window.location.origin).href
+      backgroundAudioRef.current = bgAudio
+    }
+    return backgroundAudioRef.current
+  }
+
+  function pauseBackgroundNoise() {
+    const bgAudio = backgroundAudioRef.current
+    if (!bgAudio) {
+      return
+    }
+
+    if (!bgAudio.paused) {
+      bgAudio.pause()
+      console.log('[audio:bg] paused for painting track')
+    }
+  }
+
+  function playBackgroundNoise(reason) {
+    const paintingAudio = audioRef.current
+    if (paintingAudio && paintingAudio.src && !paintingAudio.paused) {
+      return
+    }
+
+    const bgAudio = ensureBackgroundAudio()
+    bgAudio.volume = BACKGROUND_AUDIO_VOLUME
+
+    if (!bgAudio.paused) {
+      return
+    }
+
+    bgAudio.play().then(() => {
+      console.log('[audio:bg] playback started', { reason })
+    }).catch((err) => {
+      if (err?.name === 'NotAllowedError') {
+        console.log('[audio:bg] autoplay blocked, waiting for gesture', err)
+        return
+      }
+      console.log('[audio:bg] playback failed', err)
+    })
   }
 
   const mapKeyToAction = (key) => {
@@ -305,13 +356,21 @@ function App() {
       audioRef.current = audio
     }
 
+    ensureBackgroundAudio()
+
     const audio = audioRef.current
     const targetMusic = paintingInfo.hasSelection ? paintingInfo.musicUrl : ''
 
     if (!targetMusic) {
       pendingMusicCandidatesRef.current = []
       pendingMusicIndexRef.current = 0
+      const shouldWaitForFade = audio && audio.src && !audio.paused
       fadeOutAndStopAudio(audio)
+      if (shouldWaitForFade) {
+        window.setTimeout(() => playBackgroundNoise('painting-ended'), AUDIO_FADE_OUT_MS + 20)
+      } else {
+        playBackgroundNoise('no-painting-selected')
+      }
       return
     }
 
@@ -364,6 +423,7 @@ function App() {
       if (applyCandidate(nextIndex)) {
         audio.play().then(() => {
           audioUnlockedRef.current = true
+          pauseBackgroundNoise()
           console.log('[audio] playback started on fallback candidate', {
             selectionKey: paintingInfo.selectionKey,
             candidateIndex: nextIndex,
@@ -397,6 +457,7 @@ function App() {
 
     audio.play().then(() => {
       audioUnlockedRef.current = true
+      pauseBackgroundNoise()
       console.log('[audio] playback started', {
         selectionKey: paintingInfo.selectionKey,
         src: audio.src,
@@ -420,13 +481,16 @@ function App() {
       audioUnlockedRef.current = true
       const audio = audioRef.current
       if (!audio || !audio.paused || !audio.src) {
+        playBackgroundNoise('unlock-gesture')
         return
       }
 
       audio.play().then(() => {
+        pauseBackgroundNoise()
         console.log('[audio] playback resumed after user gesture', { src: audio.src })
       }).catch((err) => {
         console.log('[audio] user gesture play failed', err)
+        playBackgroundNoise('unlock-fallback')
       })
     }
 
@@ -449,6 +513,14 @@ function App() {
       audioRef.current.load()
       audioRef.current.volume = AUDIO_BASE_VOLUME
       audioRef.current = null
+    }
+
+    if (backgroundAudioRef.current) {
+      backgroundAudioRef.current.pause()
+      backgroundAudioRef.current.removeAttribute('src')
+      backgroundAudioRef.current.load()
+      backgroundAudioRef.current.volume = BACKGROUND_AUDIO_VOLUME
+      backgroundAudioRef.current = null
     }
   }, [])
 
