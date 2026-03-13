@@ -1839,58 +1839,51 @@ function App() {
         </>
       ) : null}
 
-      <div className="controls-hint">
-        <p>
-          <strong>{uiText.keyboardControls}</strong>
-        </p>
-        <p>{uiText.moveForward}</p>
-        <p>{uiText.moveBackward}</p>
-        <p>{uiText.turnLeft}</p>
-        <p>{uiText.turnRight}</p>
-      </div>
+<div className="controls">
+  <button
+    type="button"
+    className="control-btn turnLeft"
+    onPointerDown={(e) => handleControlPointerDown('q', e)}
+    onMouseDown={(e) => handleControlMouseDown('q', e)}
+    onTouchStart={(e) => handleControlTouchStart('q', e)}
+    onClick={(e) => handleControlClick('q', e)}
+  >
+    {uiText.buttonTurnLeft}
+  </button>
 
-      <div className="controls">
-        <button
-          type="button"
-          className="turnLeft"
-          onPointerDown={(e) => handleControlPointerDown('q', e)}
-          onMouseDown={(e) => handleControlMouseDown('q', e)}
-          onTouchStart={(e) => handleControlTouchStart('q', e)}
-          onClick={(e) => handleControlClick('q', e)}
-        >
-          {uiText.buttonTurnLeft}
-        </button>
-        <button
-          type="button"
-          className="forward"
-          onPointerDown={(e) => handleControlPointerDown('w', e)}
-          onMouseDown={(e) => handleControlMouseDown('w', e)}
-          onTouchStart={(e) => handleControlTouchStart('w', e)}
-          onClick={(e) => handleControlClick('w', e)}
-        >
-          {uiText.buttonForward}
-        </button>
-        <button
-          type="button"
-          className="turnRight"
-          onPointerDown={(e) => handleControlPointerDown('e', e)}
-          onMouseDown={(e) => handleControlMouseDown('e', e)}
-          onTouchStart={(e) => handleControlTouchStart('e', e)}
-          onClick={(e) => handleControlClick('e', e)}
-        >
-          {uiText.buttonTurnRight}
-        </button>
-        <button
-          type="button"
-          className="backward"
-          onPointerDown={(e) => handleControlPointerDown('s', e)}
-          onMouseDown={(e) => handleControlMouseDown('s', e)}
-          onTouchStart={(e) => handleControlTouchStart('s', e)}
-          onClick={(e) => handleControlClick('s', e)}
-        >
-          {uiText.buttonBackward}
-        </button>
-      </div>
+  <button
+    type="button"
+    className="control-btn forward"
+    onPointerDown={(e) => handleControlPointerDown('w', e)}
+    onMouseDown={(e) => handleControlMouseDown('w', e)}
+    onTouchStart={(e) => handleControlTouchStart('w', e)}
+    onClick={(e) => handleControlClick('w', e)}
+  >
+    {uiText.buttonForward}
+  </button>
+
+  <button
+    type="button"
+    className="control-btn turnRight"
+    onPointerDown={(e) => handleControlPointerDown('e', e)}
+    onMouseDown={(e) => handleControlMouseDown('e', e)}
+    onTouchStart={(e) => handleControlTouchStart('e', e)}
+    onClick={(e) => handleControlClick('e', e)}
+  >
+    {uiText.buttonTurnRight}
+  </button>
+
+  <button
+    type="button"
+    className="control-btn backward"
+    onPointerDown={(e) => handleControlPointerDown('s', e)}
+    onMouseDown={(e) => handleControlMouseDown('s', e)}
+    onTouchStart={(e) => handleControlTouchStart('s', e)}
+    onClick={(e) => handleControlClick('s', e)}
+  >
+    {uiText.buttonBackward}
+  </button>
+</div>
 
       <div id="canvas" ref={mountRef} />
     </>
