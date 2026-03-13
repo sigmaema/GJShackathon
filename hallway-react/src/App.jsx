@@ -9,6 +9,8 @@ let catalogRowsPromise = null
 function App() {
   const mountRef = useRef(null)
   const motionBlurRef = useRef(null)
+  const cursorLightRef = useRef(null)
+  const audioRef = useRef(null)
   const pressedThisFrameRef = useRef({})
   const uiCardLogRef = useRef({ visible: false, key: '' })
   const [paintingInfo, setPaintingInfo] = useState({
@@ -16,6 +18,7 @@ function App() {
     selectionKey: '',
     side: 'left',
     imageUrl: '',
+    musicUrl: '',
     title: '',
     artist: '',
     year: '',
@@ -23,6 +26,7 @@ function App() {
     description: 'Turn left or right to inspect a painting.',
   })
   const [lastSelectedInfo, setLastSelectedInfo] = useState(null)
+  const [modalInfo, setModalInfo] = useState(null)
 
   const pressKey = (key) => {
     if (!pressedThisFrameRef.current[key]) {
@@ -66,12 +70,71 @@ function App() {
   }, [paintingInfo])
 
   useEffect(() => {
+    if (!modalInfo) {
+      return
+    }
+
+    if (paintingInfo.hasSelection) {
+      setModalInfo(paintingInfo)
+    }
+  }, [modalInfo, paintingInfo])
+
+  useEffect(() => {
+    function onEscape(e) {
+      if (e.key === 'Escape') {
+        setModalInfo(null)
+      }
+    }
+
+    window.addEventListener('keydown', onEscape)
+    return () => window.removeEventListener('keydown', onEscape)
+  }, [])
+
+  useEffect(() => {
+    if (!audioRef.current) {
+      const audio = new Audio()
+      audio.loop = true
+      audio.volume = 0.5
+      audioRef.current = audio
+    }
+
+    const audio = audioRef.current
+    const targetMusic = paintingInfo.hasSelection ? paintingInfo.musicUrl : ''
+
+    if (!targetMusic) {
+      audio.pause()
+      audio.removeAttribute('src')
+      audio.load()
+      return
+    }
+
+    const resolvedTarget = new URL(targetMusic, window.location.href).href
+    if (audio.src !== resolvedTarget) {
+      audio.src = targetMusic
+      audio.currentTime = 0
+    }
+
+    audio.play().catch((err) => {
+      console.log('[audio] play blocked or failed', err)
+    })
+  }, [paintingInfo.hasSelection, paintingInfo.musicUrl, paintingInfo.selectionKey])
+
+  useEffect(() => () => {
+    if (audioRef.current) {
+      audioRef.current.pause()
+      audioRef.current.removeAttribute('src')
+      audioRef.current.load()
+      audioRef.current = null
+    }
+  }, [])
+
+  useEffect(() => {
     if (!mountRef.current) return undefined
 
     // Scene setup
     const scene = new THREE.Scene()
-    scene.background = new THREE.Color(0x2a2a2a)
-    scene.fog = new THREE.Fog(0x2a2a2a, 50, 200)
+    scene.background = new THREE.Color(0x1a1a1a)
+    scene.fog = new THREE.Fog(0x1a1a1a, 40, 180)
 
     const BASE_VERTICAL_FOV = 75
     const BASE_ASPECT = 16 / 9
@@ -213,6 +276,8 @@ function App() {
     const SIDE_RIGHT_X = 2.4
     const FALLBACK_MAX_Z_DISTANCE = 4.8
     const SIDE_LOOKAHEAD_FACTOR = 0.2
+    const START_BACK_OFFSET = 2
+    const START_OFFSET_GAP_RATIO_LIMIT = 0.42
 
     const fallbackCatalog = [
       { title: 'Untitled Study I', artist: 'Unknown', year: '1881', style: 'Unknown', description: 'Oil on panel.' },
@@ -230,11 +295,18 @@ function App() {
     let loggedNoSelection = false
     let lastValidSelection = null
     let lastValidSelectionAt = 0
+    let smoothedCameraZ = player.position.z
+    let lockedSelection = null
     // Keep the last selected painting visible through short raycast gaps while stepping.
     const SELECTION_HOLD_MS = 1400
 
     function normalizeImageUrl(painting) {
       const raw = painting.photo_link || painting.image_url || painting.url || painting.image || painting.image_path || ''
+      return typeof raw === 'string' ? raw.trim() : ''
+    }
+
+    function normalizeMusicUrl(painting) {
+      const raw = painting.music || painting.music_url || painting.audio || painting.audio_url || painting.soundtrack || ''
       return typeof raw === 'string' ? raw.trim() : ''
     }
 
@@ -311,6 +383,11 @@ function App() {
             description: item.description || item.description_cs || 'No description available.',
             photo_link: item.photo_link,
             image_url: item.image_url,
+            music: item.music,
+            music_url: item.music_url,
+            audio: item.audio,
+            audio_url: item.audio_url,
+            soundtrack: item.soundtrack,
             url: item.url,
             image: item.image,
             image_path: item.image_path,
@@ -370,6 +447,7 @@ function App() {
             style: item.style || '',
             description: item.description || 'No description available.',
             image_url: normalizeImageUrl(item),
+            music_url: normalizeMusicUrl(item),
           }))
 
           const withImageMetadata = await Promise.all(
@@ -432,7 +510,18 @@ function App() {
     scene.add(ceiling)
 
     // Create hallway walls
-    const wallMaterial = new THREE.MeshStandardMaterial({ color: 0x888888 })
+    const wallTexture = new THREE.TextureLoader().load('/wall.png')
+    wallTexture.wrapS = THREE.RepeatWrapping
+    wallTexture.wrapT = THREE.RepeatWrapping
+    wallTexture.repeat.set(80, 2)
+    wallTexture.colorSpace = THREE.SRGBColorSpace
+
+    const wallMaterial = new THREE.MeshStandardMaterial({
+      map: wallTexture,
+      color: 0xffffff,
+      roughness: 0.95,
+      metalness: 0.02,
+    })
 
     const leftWallGeometry = new THREE.PlaneGeometry(500, 3)
     const leftWall = new THREE.Mesh(leftWallGeometry, wallMaterial)
@@ -454,7 +543,9 @@ function App() {
 
     const artworks = []
     const artworkMeshes = []
+    const labelMeshes = []
     const raycaster = new THREE.Raycaster()
+    const clickRaycaster = new THREE.Raycaster()
     const screenCenter = new THREE.Vector2(0, 0)
 
     function createPlaceholderTexture(painting, hue) {
@@ -482,6 +573,78 @@ function App() {
       }
 
       return new THREE.CanvasTexture(canvas)
+    }
+
+    function wrapCanvasText(ctx, text, x, startY, maxWidth, lineHeight, maxLines) {
+      const words = String(text || '').split(/\s+/).filter(Boolean)
+      const lines = []
+      let current = ''
+
+      for (let i = 0; i < words.length; i += 1) {
+        const test = current ? `${current} ${words[i]}` : words[i]
+        if (ctx.measureText(test).width > maxWidth && current) {
+          lines.push(current)
+          current = words[i]
+        } else {
+          current = test
+        }
+      }
+
+      if (current) {
+        lines.push(current)
+      }
+
+      for (let i = 0; i < Math.min(lines.length, maxLines); i += 1) {
+        const needsEllipsis = i === maxLines - 1 && i < lines.length - 1
+        ctx.fillText(needsEllipsis ? `${lines[i]}...` : lines[i], x, startY + i * lineHeight)
+      }
+    }
+
+    function createWallLabelTexture(painting) {
+      const canvas = document.createElement('canvas')
+      canvas.width = 1024
+      canvas.height = 560
+      const ctx = canvas.getContext('2d')
+      if (!ctx) return new THREE.CanvasTexture(canvas)
+
+      ctx.fillStyle = 'rgba(245, 236, 216, 0.95)'
+      ctx.fillRect(0, 0, canvas.width, canvas.height)
+      ctx.strokeStyle = 'rgba(54, 43, 28, 0.55)'
+      ctx.lineWidth = 12
+      ctx.strokeRect(12, 12, canvas.width - 24, canvas.height - 24)
+
+      ctx.fillStyle = '#1c1610'
+      ctx.textAlign = 'left'
+      ctx.font = 'bold 56px Georgia'
+      ctx.fillText(painting.title || 'Untitled', 48, 92)
+
+      const metaParts = [painting.artist || 'Unknown Artist']
+      if (painting.year) {
+        metaParts.push(String(painting.year))
+      }
+      if (painting.style) {
+        metaParts.push(String(painting.style))
+      }
+
+      ctx.font = '32px Georgia'
+      ctx.fillStyle = '#3b3022'
+      ctx.fillText(metaParts.join(' | '), 48, 150)
+
+      ctx.font = '30px Georgia'
+      ctx.fillStyle = '#20180f'
+      wrapCanvasText(
+        ctx,
+        painting.description || 'No description available.',
+        48,
+        220,
+        canvas.width - 96,
+        42,
+        6
+      )
+
+      const texture = new THREE.CanvasTexture(canvas)
+      texture.colorSpace = THREE.SRGBColorSpace
+      return texture
     }
 
     function applyImageTextureIfAvailable(material, mesh, imageUrl) {
@@ -514,6 +677,23 @@ function App() {
       )
     }
 
+    function createSelectionFromPainting(painting, side, z) {
+      const title = painting.title || 'Untitled'
+      const artist = painting.artist || 'Unknown Artist'
+      const year = painting.year ? String(painting.year) : ''
+      const style = painting.style || 'Unknown'
+      const description =
+        painting.description ||
+        painting.desc ||
+        painting.details ||
+        painting.text ||
+        'No description available.'
+      const imageUrl = normalizeImageUrl(painting)
+      const musicUrl = normalizeMusicUrl(painting)
+      const selectionKey = `${side}:${z}`
+      return { hasSelection: true, selectionKey, side, imageUrl, musicUrl, title, artist, year, style, description }
+    }
+
     function addArtwork(painting, x, z, rotation, side, hue) {
       const geometry = new THREE.PlaneGeometry(1, 1)
       const texture = createPlaceholderTexture(painting, hue)
@@ -527,15 +707,33 @@ function App() {
       mesh.castShadow = true
       mesh.receiveShadow = true
 
+      const labelGeometry = new THREE.PlaneGeometry(1.0, 0.56)
+      const labelTexture = createWallLabelTexture(painting)
+      const labelMaterial = new THREE.MeshStandardMaterial({
+        map: labelTexture,
+        transparent: true,
+        roughness: 0.95,
+        metalness: 0.02,
+      })
+      const labelMesh = new THREE.Mesh(labelGeometry, labelMaterial)
+      labelMesh.position.set(side === 'left' ? x + 0.03 : x - 0.03, 1.02, z + 0.95)
+      labelMesh.rotation.y = rotation
+      labelMesh.receiveShadow = true
+      labelMesh.userData.painting = painting
+      labelMesh.userData.side = side
+      labelMesh.userData.z = z
+
       scene.add(mesh)
+      scene.add(labelMesh)
       applyImageTextureIfAvailable(material, mesh, painting.image_url)
       mesh.userData.painting = painting
       mesh.userData.side = side
       mesh.userData.z = z
 
       artworkMeshes.push(mesh)
+      labelMeshes.push(labelMesh)
 
-      artworks.push({ x, z, rotation, mesh, side, painting })
+      artworks.push({ x, z, rotation, mesh, labelMesh, side, painting })
     }
 
     function getPaintingWorldWidth(painting) {
@@ -593,6 +791,7 @@ function App() {
             prev.hasSelection === nextState.hasSelection &&
             prev.selectionKey === nextState.selectionKey &&
             prev.imageUrl === nextState.imageUrl &&
+            prev.musicUrl === nextState.musicUrl &&
             prev.title === nextState.title &&
             prev.artist === nextState.artist &&
             prev.year === nextState.year &&
@@ -603,6 +802,11 @@ function App() {
           }
           return nextState
         })
+      }
+
+      if (lockedSelection) {
+        updateInfoState(lockedSelection)
+        return
       }
 
       raycaster.setFromCamera(screenCenter, camera)
@@ -650,6 +854,7 @@ function App() {
           selectionKey: '',
           side: 'left',
           imageUrl: '',
+          musicUrl: '',
           title: '',
           artist: '',
           year: '',
@@ -660,36 +865,26 @@ function App() {
       }
 
       const painting = hit.object.userData.painting
-      const title = painting.title || 'Untitled'
-      const artist = painting.artist || 'Unknown Artist'
-      const year = painting.year ? String(painting.year) : ''
-      const style = painting.style || 'Unknown'
-      const description =
-        painting.description ||
-        painting.desc ||
-        painting.details ||
-        painting.text ||
-        'No description available.'
-      const imageUrl = normalizeImageUrl(painting)
       const selectionKey = `${hit.object.userData.side}:${hit.object.userData.z}`
       const side = hit.object.userData.side || 'left'
+      const nextSelection = createSelectionFromPainting(painting, side, hit.object.userData.z)
 
       if (selectionKey !== lastLoggedSelectionKey) {
         console.log('[selection] painting', {
           key: selectionKey,
-          title,
-          artist,
-          year,
-          style,
-          description,
-          photo_link: imageUrl,
+          title: nextSelection.title,
+          artist: nextSelection.artist,
+          year: nextSelection.year,
+          style: nextSelection.style,
+          description: nextSelection.description,
+          photo_link: nextSelection.imageUrl,
+          music_url: nextSelection.musicUrl,
           side: hit.object.userData.side,
           z: hit.object.userData.z,
         })
         lastLoggedSelectionKey = selectionKey
         loggedNoSelection = false
       }
-      const nextSelection = { hasSelection: true, selectionKey, side, imageUrl, title, artist, year, style, description }
       lastValidSelection = nextSelection
       lastValidSelectionAt = performance.now()
       updateInfoState(nextSelection)
@@ -702,13 +897,25 @@ function App() {
         const step = addArtworkPair(z)
         z -= step
       }
+
+      // Start aligned with the second pair so initial left/right selection opens paintings 3 and 4.
+      const uniquePairZ = [...new Set(artworks.map((a) => a.z))].sort((a, b) => b - a)
+      if (uniquePairZ.length > 1) {
+        const gapToFirstPair = uniquePairZ[0] - uniquePairZ[1]
+        // Keep startup position closer to pair 2 than pair 1 even with large manual offsets.
+        const safeOffset = Math.min(START_BACK_OFFSET, gapToFirstPair * START_OFFSET_GAP_RATIO_LIMIT)
+        const startZ = uniquePairZ[1] + safeOffset
+        player.position.z = startZ
+        view.position.z = startZ
+        smoothedCameraZ = startZ
+      }
     }
 
     // Lighting
-    const ambientLight = new THREE.AmbientLight(0xffffff, 0.6)
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.35)
     scene.add(ambientLight)
 
-    const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8)
+    const directionalLight = new THREE.DirectionalLight(0xffffff, 0.5)
     directionalLight.position.set(5, 10, 5)
     directionalLight.castShadow = true
     directionalLight.shadow.mapSize.width = 2048
@@ -729,8 +936,59 @@ function App() {
       renderer.setSize(window.innerWidth, window.innerHeight)
     }
 
+    function updateCursorLightPosition(clientX, clientY) {
+      if (!cursorLightRef.current) return
+      cursorLightRef.current.style.setProperty('--flash-x', `${clientX}px`)
+      cursorLightRef.current.style.setProperty('--flash-y', `${clientY}px`)
+    }
+
+    function onPointerMove(e) {
+      updateCursorLightPosition(e.clientX, e.clientY)
+    }
+
+    function onTouchMove(e) {
+      const touch = e.touches && e.touches[0]
+      if (!touch) return
+      updateCursorLightPosition(touch.clientX, touch.clientY)
+    }
+
+    function onPointerDown(e) {
+      const target = e.target
+      if (target instanceof Element && target.closest('.painting-modal, .painting-info-card')) {
+        return
+      }
+
+      const rect = renderer.domElement.getBoundingClientRect()
+      const x = ((e.clientX - rect.left) / rect.width) * 2 - 1
+      const y = -((e.clientY - rect.top) / rect.height) * 2 + 1
+      const pointer = new THREE.Vector2(x, y)
+
+      clickRaycaster.setFromCamera(pointer, camera)
+      const clickableMeshes = [...labelMeshes, ...artworkMeshes]
+      const hits = clickRaycaster.intersectObjects(clickableMeshes, false)
+      if (hits.length > 0) {
+        const picked = hits[0].object?.userData
+        if (picked?.painting) {
+          const selection = createSelectionFromPainting(picked.painting, picked.side || 'left', picked.z)
+          lockedSelection = selection
+          lastValidSelection = selection
+          lastValidSelectionAt = performance.now()
+          setPaintingInfo(selection)
+          return
+        }
+      }
+
+      // Click outside labels unlocks manual modal selection.
+      lockedSelection = null
+    }
+
+    updateCursorLightPosition(window.innerWidth / 2, window.innerHeight / 2)
+
     window.addEventListener('keydown', onKeyDown)
     window.addEventListener('resize', onResize)
+    window.addEventListener('pointermove', onPointerMove)
+    window.addEventListener('touchmove', onTouchMove, { passive: true })
+    window.addEventListener('pointerdown', onPointerDown)
     updateCameraProjection()
 
     // Animation loop
@@ -794,17 +1052,18 @@ function App() {
 
       // Update camera position (player position + eye height)
       camera.position.x = view.position.x
-      let cameraZ = view.position.z - sideLookAheadOffset
+      const baseCameraZ = view.position.z - sideLookAheadOffset
+      let targetCameraZ = baseCameraZ
 
-      if (sideFactor > 0.85) {
-        const side = sideFacing > 0 ? 'left' : 'right'
-        const nearestOnSide = getNearestArtworkOnSide(side, view.position.z, player.moveDistance)
-        if (nearestOnSide) {
-          cameraZ = THREE.MathUtils.lerp(cameraZ, nearestOnSide.z, 0.82)
-        }
+      const side = sideFacing >= 0 ? 'left' : 'right'
+      const nearestOnSide = getNearestArtworkOnSide(side, view.position.z, player.moveDistance)
+      if (nearestOnSide) {
+        const centerBlend = THREE.MathUtils.smoothstep(sideFactor, 0.6, 0.95)
+        targetCameraZ = THREE.MathUtils.lerp(baseCameraZ, nearestOnSide.z, centerBlend)
       }
 
-      camera.position.z = cameraZ
+      smoothedCameraZ = THREE.MathUtils.lerp(smoothedCameraZ, targetCameraZ, 0.22)
+      camera.position.z = smoothedCameraZ
 
       // Update camera rotation based on direction
       camera.rotation.order = 'YXZ'
@@ -828,11 +1087,20 @@ function App() {
       cancelAnimationFrame(rafId)
       window.removeEventListener('keydown', onKeyDown)
       window.removeEventListener('resize', onResize)
+      window.removeEventListener('pointermove', onPointerMove)
+      window.removeEventListener('touchmove', onTouchMove)
+      window.removeEventListener('pointerdown', onPointerDown)
 
-      artworks.forEach(({ mesh }) => {
+      artworks.forEach(({ mesh, labelMesh }) => {
         mesh.geometry.dispose()
         if (mesh.material.map) mesh.material.map.dispose()
         mesh.material.dispose()
+
+        if (labelMesh) {
+          labelMesh.geometry.dispose()
+          if (labelMesh.material.map) labelMesh.material.map.dispose()
+          labelMesh.material.dispose()
+        }
       })
 
       floorGeometry.dispose()
@@ -841,6 +1109,7 @@ function App() {
       ceilingMaterial.dispose()
       leftWallGeometry.dispose()
       rightWallGeometry.dispose()
+      if (wallMaterial.map) wallMaterial.map.dispose()
       wallMaterial.dispose()
       renderer.dispose()
 
@@ -851,8 +1120,7 @@ function App() {
   }, [])
 
   const activeInfo = paintingInfo.hasSelection ? paintingInfo : lastSelectedInfo
-  const selectedInfo = paintingInfo.hasSelection ? paintingInfo : null
-  const showCenterModal = Boolean(selectedInfo)
+  const showCenterModal = Boolean(modalInfo)
 
   return (
     <>
@@ -862,27 +1130,53 @@ function App() {
       </div>
 
       <div id="motionBlur" ref={motionBlurRef} />
+      <div
+        className={`cursor-light-mask ${showCenterModal ? 'cursor-light-mask--focused' : ''}`}
+        ref={cursorLightRef}
+        aria-hidden="true"
+      />
+
+      {activeInfo ? (
+        <button
+          type="button"
+          className="painting-info-card"
+          onClick={() => setModalInfo(activeInfo)}
+          aria-label="Open painting details"
+        >
+          <p><strong>Name:</strong> {activeInfo.title}</p>
+          <p><strong>Author:</strong> {activeInfo.artist}</p>
+          <p><strong>Year:</strong> {activeInfo.year || 'Unknown'}</p>
+          <p><strong>Style:</strong> {activeInfo.style || 'Unknown'}</p>
+          <p className="painting-info-card__hint">Click to open full details</p>
+        </button>
+      ) : null}
 
       {showCenterModal ? (
         <>
-          <div className="painting-modal-backdrop" aria-hidden="true" />
+          <div className="painting-modal-backdrop" aria-hidden="true" onClick={() => setModalInfo(null)} />
           <section className="painting-modal" role="dialog" aria-label="Selected painting">
             <div className="painting-modal__media">
-              {selectedInfo.imageUrl ? (
-                <img src={selectedInfo.imageUrl} alt={selectedInfo.title || 'Selected painting'} className="painting-modal__image" />
+              {modalInfo.imageUrl ? (
+                <img src={modalInfo.imageUrl} alt={modalInfo.title || 'Selected painting'} className="painting-modal__image" />
               ) : (
                 <div className="painting-modal__image painting-modal__image--fallback">Image unavailable</div>
               )}
             </div>
-          </section>
 
-          <aside className="painting-side-info" aria-live="polite">
-            <p><strong>Name:</strong> {selectedInfo.title}</p>
-            <p><strong>Author:</strong> {selectedInfo.artist}</p>
-            <p><strong>Year:</strong> {selectedInfo.year || 'Unknown'}</p>
-            <p><strong>Style:</strong> {selectedInfo.style || 'Unknown'}</p>
-            <p><strong>Description:</strong> {selectedInfo.description}</p>
-          </aside>
+            <div className="painting-modal__content" aria-live="polite">
+              <p><strong>Name:</strong> {modalInfo.title}</p>
+              <p><strong>Author:</strong> {modalInfo.artist}</p>
+              <p><strong>Year:</strong> {modalInfo.year || 'Unknown'}</p>
+              <p><strong>Style:</strong> {modalInfo.style || 'Unknown'}</p>
+              <p><strong>Description:</strong> {modalInfo.description}</p>
+            </div>
+
+            <div className="painting-modal__actions">
+              <button type="button" className="painting-modal__close" onClick={() => setModalInfo(null)}>
+                Close
+              </button>
+            </div>
+          </section>
         </>
       ) : null}
 

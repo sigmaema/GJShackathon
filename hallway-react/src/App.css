@@ -42,7 +42,7 @@ button {
   border-radius: 5px;
   font-size: 14px;
   font-weight: bold;
-  cursor: pointer;
+  cursor: var(--custom-cursor);
   transition: background 0.2s;
 }
 
@@ -108,13 +108,50 @@ button:active {
   z-index: 1;
 }
 
+.cursor-light-mask {
+  --flash-x: 50vw;
+  --flash-y: 50vh;
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2;
+  background:
+    radial-gradient(
+      circle 75px at var(--flash-x) var(--flash-y),
+      rgba(0, 0, 0, 0) 0,
+      rgba(0, 0, 0, 0.02) 20px,
+      rgba(0, 0, 0, 0.08) 45px,
+      rgba(0, 0, 0, 0.16) 70px,
+      rgba(0, 0, 0, 0.28) 105px,
+      rgba(0, 0, 0, 0.42) 145px,
+      rgba(0, 0, 0, 0.58) 190px,
+      rgba(0, 0, 0, 0.75) 100%
+    );
+  transition: background-position 0.04s linear;
+}
+
+.cursor-light-mask--focused {
+  background:
+    radial-gradient(
+      circle 95px at var(--flash-x) var(--flash-y),
+      rgba(0, 0, 0, 0) 0,
+      rgba(0, 0, 0, 0.01) 28px,
+      rgba(0, 0, 0, 0.04) 58px,
+      rgba(0, 0, 0, 0.1) 94px,
+      rgba(0, 0, 0, 0.2) 134px,
+      rgba(0, 0, 0, 0.34) 180px,
+      rgba(0, 0, 0, 0.52) 236px,
+      rgba(0, 0, 0, 0.72) 100%
+    );
+}
+
 .painting-modal-backdrop {
   position: fixed;
   inset: 0;
   background: rgba(4, 7, 12, 0.52);
   backdrop-filter: blur(5px);
   pointer-events: none;
-  z-index: 25;
+  z-index: 9998;
 }
 
 .painting-modal {
@@ -126,17 +163,19 @@ button:active {
   max-height: min(86vh, 740px);
   border-radius: 14px;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
   background: rgba(9, 12, 18, 0.96);
   border: 1px solid rgba(255, 255, 255, 0.2);
   color: #f5f7ff;
   line-height: 1.45;
   box-shadow: 0 24px 72px rgba(0, 0, 0, 0.45);
-  pointer-events: none;
-  z-index: 30;
+  pointer-events: auto;
+  z-index: 9999;
 }
 
 .painting-modal__media {
-  min-height: 340px;
+  min-height: 320px;
   background: #0f131c;
   display: flex;
   align-items: center;
@@ -160,7 +199,31 @@ button:active {
   text-align: center;
 }
 
-.painting-side-info {
+.painting-modal__content {
+  padding: 16px 20px 12px;
+  font-size: 14px;
+  overflow-y: auto;
+}
+
+.painting-modal__content p {
+  margin: 0 0 8px;
+}
+
+.painting-modal__actions {
+  padding: 0 20px 18px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.painting-modal__close {
+  width: auto;
+  min-width: 110px;
+  height: 40px;
+  border-radius: 8px;
+  padding: 0 16px;
+}
+
+.painting-info-card {
   position: fixed;
   top: 50%;
   left: calc(50% + min(700px, calc(100vw - 40px)) / 2 + 16px);
@@ -174,12 +237,19 @@ button:active {
   font-size: 13px;
   overflow-y: auto;
   color: #f5f7ff;
-  z-index: 31;
-  pointer-events: none;
+  z-index: 10;
+  pointer-events: auto;
+  text-align: left;
 }
 
-.painting-side-info p {
+.painting-info-card p {
   margin: 0 0 8px;
+}
+
+.painting-info-card__hint {
+  margin-top: 12px;
+  color: rgba(255, 255, 255, 0.72);
+  font-style: italic;
 }
 
 @media (max-width: 900px) {
@@ -197,7 +267,7 @@ button:active {
     max-height: 52vh;
   }
 
-  .painting-side-info {
+  .painting-info-card {
     top: auto;
     bottom: 12px;
     left: 10px;
