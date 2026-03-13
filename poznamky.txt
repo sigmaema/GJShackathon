@@ -1,0 +1,8 @@
+- vision blur when moving 0
+- moving is quicker (no need to click so much to move) 1
+- only move once to the left to see the artowrk 0
+- artworks are more closer together (less space between them) 01
+- hallway should me more narrow 01
+
+- více kvalitní obrázky
+- hezčí chodba - více detailní
