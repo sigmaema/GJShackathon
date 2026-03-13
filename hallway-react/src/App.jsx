@@ -13,6 +13,7 @@ function App() {
   const audioRef = useRef(null)
   const pressedThisFrameRef = useRef({})
   const uiCardLogRef = useRef({ visible: false, key: '' })
+  const paintingInfoRef = useRef(null)
   const [paintingInfo, setPaintingInfo] = useState({
     hasSelection: false,
     selectionKey: '',
@@ -25,8 +26,11 @@ function App() {
     style: '',
     description: 'Turn left or right to inspect a painting.',
   })
-  const [lastSelectedInfo, setLastSelectedInfo] = useState(null)
   const [modalInfo, setModalInfo] = useState(null)
+
+  useEffect(() => {
+    paintingInfoRef.current = paintingInfo
+  }, [paintingInfo])
 
   const pressKey = (key) => {
     if (!pressedThisFrameRef.current[key]) {
@@ -62,12 +66,6 @@ function App() {
     paintingInfo.artist,
     paintingInfo.year,
   ])
-
-  useEffect(() => {
-    if (paintingInfo.hasSelection) {
-      setLastSelectedInfo(paintingInfo)
-    }
-  }, [paintingInfo])
 
   useEffect(() => {
     if (!modalInfo) {
@@ -158,7 +156,11 @@ function App() {
     const renderer = new THREE.WebGLRenderer({ antialias: true })
     renderer.setSize(window.innerWidth, window.innerHeight)
     renderer.shadowMap.enabled = true
-    mountRef.current.appendChild(renderer.domElement)
+    renderer.domElement.style.position = 'absolute'
+    renderer.domElement.style.inset = '0'
+    renderer.domElement.style.display = 'block'
+    // Ensure only one active WebGL canvas is mounted to avoid stale rects after hot reloads.
+    mountRef.current.replaceChildren(renderer.domElement)
 
     // Player movement
     const player = {
@@ -954,11 +956,49 @@ function App() {
 
     function onPointerDown(e) {
       const target = e.target
-      if (target instanceof Element && target.closest('.painting-modal, .painting-info-card')) {
+      const targetEl = target instanceof Element ? target : null
+      const clickedModal = Boolean(targetEl && targetEl.closest('.painting-modal'))
+      const clickedBackdrop = Boolean(targetEl && targetEl.closest('.painting-modal-backdrop'))
+      const clickedDomCard = Boolean(targetEl && targetEl.closest('.painting-card, .painting-info-card'))
+      const currentPaintingInfo = paintingInfoRef.current
+
+      console.log('[click] pointerdown registered', {
+        pointerType: e.pointerType,
+        button: e.button,
+        clientX: e.clientX,
+        clientY: e.clientY,
+        targetTag: targetEl?.tagName || null,
+        targetClass: targetEl?.className || null,
+        clickedModal,
+        clickedBackdrop,
+        clickedDomCard,
+      })
+
+      if (clickedModal || clickedBackdrop) {
+        console.log('[click] ignored: modal/backdrop interaction')
+        return
+      }
+
+      if (targetEl instanceof HTMLCanvasElement && targetEl !== renderer.domElement) {
+        console.log('[click] ignored: non-active canvas target', {
+          activeCanvasClass: renderer.domElement.className || null,
+          targetCanvasClass: targetEl.className || null,
+        })
         return
       }
 
       const rect = renderer.domElement.getBoundingClientRect()
+      const withinCanvasRect = e.clientX >= rect.left && e.clientX <= rect.right && e.clientY >= rect.top && e.clientY <= rect.bottom
+      console.log('[click] canvas rect', {
+        left: Number(rect.left.toFixed(1)),
+        top: Number(rect.top.toFixed(1)),
+        right: Number(rect.right.toFixed(1)),
+        bottom: Number(rect.bottom.toFixed(1)),
+        width: Number(rect.width.toFixed(1)),
+        height: Number(rect.height.toFixed(1)),
+        withinCanvasRect,
+      })
+
       const x = ((e.clientX - rect.left) / rect.width) * 2 - 1
       const y = -((e.clientY - rect.top) / rect.height) * 2 + 1
       const pointer = new THREE.Vector2(x, y)
@@ -966,19 +1006,52 @@ function App() {
       clickRaycaster.setFromCamera(pointer, camera)
       const clickableMeshes = [...labelMeshes, ...artworkMeshes]
       const hits = clickRaycaster.intersectObjects(clickableMeshes, false)
+
+      const firstHit = hits[0]?.object || null
+      const clickedWallCard = Boolean(firstHit && labelMeshes.includes(firstHit))
+      const clickedPaintingMesh = Boolean(firstHit && artworkMeshes.includes(firstHit))
+      console.log('[click] raycast result', {
+        normalizedX: Number(x.toFixed(3)),
+        normalizedY: Number(y.toFixed(3)),
+        hitCount: hits.length,
+        clickedWallCard,
+        clickedPaintingMesh,
+        firstHitHasPainting: Boolean(firstHit?.userData?.painting),
+      })
+
       if (hits.length > 0) {
         const picked = hits[0].object?.userData
         if (picked?.painting) {
           const selection = createSelectionFromPainting(picked.painting, picked.side || 'left', picked.z)
+          console.log('[click] opening modal from raycast hit', {
+            side: picked.side || 'left',
+            z: picked.z,
+            title: selection.title,
+            artist: selection.artist,
+          })
           lockedSelection = selection
           lastValidSelection = selection
           lastValidSelectionAt = performance.now()
           setPaintingInfo(selection)
+          setModalInfo(selection)
           return
         }
       }
 
+      // If user clicks while looking at a painting but misses exact geometry, open focused selection.
+      const fallbackSelection = currentPaintingInfo?.hasSelection ? currentPaintingInfo : lastValidSelection
+      if (fallbackSelection) {
+        console.log('[click] opening modal from focused fallback', {
+          selectionKey: fallbackSelection.selectionKey,
+          title: fallbackSelection.title,
+          artist: fallbackSelection.artist,
+        })
+        setModalInfo(fallbackSelection)
+        return
+      }
+
       // Click outside labels unlocks manual modal selection.
+      console.log('[click] no painting resolved, clearing lock')
       lockedSelection = null
     }
 
@@ -1119,7 +1192,6 @@ function App() {
     }
   }, [])
 
-  const activeInfo = paintingInfo.hasSelection ? paintingInfo : lastSelectedInfo
   const showCenterModal = Boolean(modalInfo)
 
   return (
@@ -1135,21 +1207,6 @@ function App() {
         ref={cursorLightRef}
         aria-hidden="true"
       />
-
-      {activeInfo ? (
-        <button
-          type="button"
-          className="painting-info-card"
-          onClick={() => setModalInfo(activeInfo)}
-          aria-label="Open painting details"
-        >
-          <p><strong>Name:</strong> {activeInfo.title}</p>
-          <p><strong>Author:</strong> {activeInfo.artist}</p>
-          <p><strong>Year:</strong> {activeInfo.year || 'Unknown'}</p>
-          <p><strong>Style:</strong> {activeInfo.style || 'Unknown'}</p>
-          <p className="painting-info-card__hint">Click to open full details</p>
-        </button>
-      ) : null}
 
       {showCenterModal ? (
         <>
