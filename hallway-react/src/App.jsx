@@ -9,6 +9,7 @@ let catalogRowsPromise = null
 function App() {
   const AUDIO_BASE_VOLUME = 0.5
   const AUDIO_FADE_OUT_MS = 450
+  const getIdleDescription = (lang) => (lang === 'cs' ? 'Otocte se doleva nebo doprava a prohlednete si obraz.' : 'Turn left or right to inspect a painting.')
   const mountRef = useRef(null)
   const motionBlurRef = useRef(null)
   const cursorLightRef = useRef(null)
@@ -23,6 +24,8 @@ function App() {
   const heldKeysRef = useRef({})
   const uiCardLogRef = useRef({ visible: false, key: '' })
   const paintingInfoRef = useRef(null)
+  const languageRef = useRef('en')
+  const [language, setLanguage] = useState('en')
   const [paintingInfo, setPaintingInfo] = useState({
     hasSelection: false,
     selectionKey: '',
@@ -33,9 +36,38 @@ function App() {
     artist: '',
     year: '',
     style: '',
-    description: 'Turn left or right to inspect a painting.',
+    description: getIdleDescription('en'),
   })
   const [modalInfo, setModalInfo] = useState(null)
+
+  const isCzech = language === 'cs'
+  const uiText = {
+    title: isCzech ? 'Galerie Nekonecne Chodby' : 'Endless Hallway Gallery',
+    intro: isCzech ? 'Prozkoumejte galerii a obdivujte obrazy na stenach.' : 'Explore the gallery and admire the artwork on the walls.',
+    keyboardControls: isCzech ? 'Klavesove Ovladani:' : 'Keyboard Controls:',
+    moveForward: isCzech ? 'W - Dopredu' : 'W - Forward',
+    moveBackward: isCzech ? 'S - Dozadu' : 'S - Backward',
+    turnLeft: isCzech ? 'Q - Otocit Doleva' : 'Q - Turn Left',
+    turnRight: isCzech ? 'E - Otocit Doprava' : 'E - Turn Right',
+    buttonTurnLeft: isCzech ? '<- Otocit Doleva' : '<- Turn Left',
+    buttonForward: isCzech ? '^ Dopredu' : '^ Forward',
+    buttonTurnRight: isCzech ? 'Otocit Doprava ->' : 'Turn Right ->',
+    buttonBackward: isCzech ? 'v Dozadu' : 'v Backward',
+    labelName: isCzech ? 'Nazev' : 'Name',
+    labelAuthor: isCzech ? 'Autor' : 'Author',
+    labelYear: isCzech ? 'Rok' : 'Year',
+    labelStyle: isCzech ? 'Styl' : 'Style',
+    labelDescription: isCzech ? 'Popis' : 'Description',
+    unknown: isCzech ? 'Nezname' : 'Unknown',
+    noDescription: isCzech ? 'Popis neni k dispozici.' : 'No description available.',
+    close: isCzech ? 'Zavrit' : 'Close',
+    selectedPainting: isCzech ? 'Vybrany obraz' : 'Selected painting',
+    languageButton: isCzech ? 'Jazyk: CZ' : 'Language: EN',
+  }
+
+  useEffect(() => {
+    languageRef.current = language
+  }, [language])
 
   function cancelAudioFade() {
     if (audioFadeRafRef.current) {
@@ -425,8 +457,8 @@ function App() {
 
     // Scene setup
     const scene = new THREE.Scene()
-    scene.background = new THREE.Color(0x1a1a1a)
-    scene.fog = new THREE.Fog(0x1a1a1a, 40, 180)
+    scene.background = new THREE.Color(0x3a3a3a)
+    scene.fog = new THREE.Fog(0x3a3a3a, 50, 210)
 
     const BASE_VERTICAL_FOV = 75
     const BASE_ASPECT = 16 / 9
@@ -680,6 +712,7 @@ function App() {
             year: item.year || '',
             style: item.style || '',
             description: item.description || item.description_cs || 'No description available.',
+            description_cz: item.description_cz || item.description_cs || item.description || 'Popis neni k dispozici.',
             photo_link: item.photo_link,
             image_url: item.image_url,
             music: item.music,
@@ -745,6 +778,7 @@ function App() {
             year: item.year || '',
             style: item.style || '',
             description: item.description || 'No description available.',
+            description_cz: item.description_cz || item.description_cs || item.description || 'Popis neni k dispozici.',
             image_url: normalizeImageUrl(item),
             music_url: normalizeMusicUrl(item),
           }))
@@ -844,7 +878,7 @@ function App() {
     const floorMaterial = new THREE.MeshStandardMaterial({
       map: floorTexture,
       color: 0xffffff,
-      roughness: 0.9,
+      roughness: 0.82,
       metalness: 0.02,
     })
     const floor = new THREE.Mesh(floorGeometry, floorMaterial)
@@ -857,8 +891,8 @@ function App() {
     const ceilingGeometry = new THREE.PlaneGeometry(5, 500)
     const ceilingMaterial = new THREE.MeshStandardMaterial({
       map: ceilingTexture,
-      color: 0xf1f1f1,
-      roughness: 0.9,
+      color: 0xffffff,
+      roughness: 0.82,
       metalness: 0.02,
     })
     const ceiling = new THREE.Mesh(ceilingGeometry, ceilingMaterial)
@@ -872,31 +906,31 @@ function App() {
     const wallTexture = new THREE.TextureLoader().load('/wall.png')
     wallTexture.wrapS = THREE.RepeatWrapping
     wallTexture.wrapT = THREE.RepeatWrapping
-    wallTexture.repeat.set(80, 2)
+    wallTexture.repeat.set(88, 2)
     wallTexture.colorSpace = THREE.SRGBColorSpace
 
     const wallMaterial = new THREE.MeshStandardMaterial({
       map: wallTexture,
       color: 0xffffff,
-      roughness: 0.95,
+      roughness: 0.85,
       metalness: 0.02,
     })
 
-    const leftWallGeometry = new THREE.PlaneGeometry(500, 3)
+    const leftWallGeometry = new THREE.PlaneGeometry(540, 3)
     const leftWall = new THREE.Mesh(leftWallGeometry, wallMaterial)
     leftWall.rotation.y = Math.PI / 2
     leftWall.position.x = -2.5
     leftWall.position.y = 1.5
-    leftWall.position.z = -250
+    leftWall.position.z = -240
     leftWall.receiveShadow = true
     scene.add(leftWall)
 
-    const rightWallGeometry = new THREE.PlaneGeometry(500, 3)
+    const rightWallGeometry = new THREE.PlaneGeometry(540, 3)
     const rightWall = new THREE.Mesh(rightWallGeometry, wallMaterial)
     rightWall.rotation.y = -Math.PI / 2
     rightWall.position.x = 2.5
     rightWall.position.y = 1.5
-    rightWall.position.z = -250
+    rightWall.position.z = -240
     rightWall.receiveShadow = true
     scene.add(rightWall)
 
@@ -1037,16 +1071,22 @@ function App() {
     }
 
     function createSelectionFromPainting(painting, side, z) {
-      const title = painting.title || 'Untitled'
-      const artist = painting.artist || 'Unknown Artist'
+      const lang = languageRef.current
+      const unknownText = lang === 'cs' ? 'Nezname' : 'Unknown'
+      const noDescriptionText = lang === 'cs' ? 'Popis neni k dispozici.' : 'No description available.'
+      const title = painting.title || (lang === 'cs' ? 'Bez nazvu' : 'Untitled')
+      const artist = painting.artist || unknownText
       const year = painting.year ? String(painting.year) : ''
-      const style = painting.style || 'Unknown'
+      const style = painting.style || unknownText
+      const descriptionSource = lang === 'cs'
+        ? (painting.description_cz || painting.description_cs || painting.description)
+        : painting.description
       const description =
-        painting.description ||
+        descriptionSource ||
         painting.desc ||
         painting.details ||
         painting.text ||
-        'No description available.'
+        noDescriptionText
       const imageUrl = normalizeImageUrl(painting)
       const musicUrl = normalizeMusicUrl(painting)
       const selectionKey = `${side}:${z}`
@@ -1151,27 +1191,6 @@ function App() {
       return nearest
     }
 
-    function findArtworkBySelectionKey(selectionKey) {
-      if (!selectionKey) {
-        return null
-      }
-
-      const [side, zRaw] = String(selectionKey).split(':')
-      const targetZ = Number(zRaw)
-      if (!Number.isFinite(targetZ)) {
-        return null
-      }
-
-      for (let i = 0; i < artworks.length; i += 1) {
-        const a = artworks[i]
-        if (a.side === side && Math.abs(a.z - targetZ) < 0.0001) {
-          return a
-        }
-      }
-
-      return null
-    }
-
     function updatePaintingInfo() {
       const updateInfoState = (nextState) => {
         setPaintingInfo((prev) => {
@@ -1247,7 +1266,7 @@ function App() {
           artist: '',
           year: '',
           style: '',
-          description: 'Turn left or right to inspect a painting.',
+          description: getIdleDescription(languageRef.current),
         })
         return
       }
@@ -1305,31 +1324,63 @@ function App() {
     }
 
     // Lighting
-    const ambientLight = new THREE.AmbientLight(0xffffff, 0.35)
+    const ambientLight = new THREE.AmbientLight(0xffffff, 1.35)
     scene.add(ambientLight)
 
-    const directionalLight = new THREE.DirectionalLight(0xffffff, 0.5)
+    const directionalLight = new THREE.DirectionalLight(0xffffff, 1.85)
     directionalLight.position.set(5, 10, 5)
     directionalLight.castShadow = true
     directionalLight.shadow.mapSize.width = 2048
     directionalLight.shadow.mapSize.height = 2048
     scene.add(directionalLight)
 
-    const selectionLightTarget = new THREE.Object3D()
-    scene.add(selectionLightTarget)
+    const moodSpotlight = new THREE.SpotLight(0xffeecc, 0.55)
+    moodSpotlight.position.set(2, 3, 2)
+    moodSpotlight.angle = THREE.MathUtils.degToRad(38)
+    moodSpotlight.penumbra = 0.5
+    moodSpotlight.decay = 1.4
+    moodSpotlight.distance = 28
+    scene.add(moodSpotlight)
 
-    const selectionLight = new THREE.SpotLight(0xfff0ce, 0, 14, THREE.MathUtils.degToRad(30), 0.45, 1.3)
-    selectionLight.position.set(0, 2.85, 0)
-    selectionLight.castShadow = false
-    selectionLight.visible = false
-    selectionLight.target = selectionLightTarget
-    scene.add(selectionLight)
+    // Warehouse-style rolling door that auto-opens on each page load.
+    const GARAGE_DOOR_CLOSED_Y = 1.55
+    const GARAGE_DOOR_OPEN_Y = 6.4
+    const GARAGE_DOOR_Z = SPAWN_Z - 0.45
+    const GARAGE_DOOR_OPEN_DELAY_MS = 1200
+    const loadStartMs = performance.now()
 
-    // Separate overhead lamp directly above the selected painting.
-    const selectionTopLight = new THREE.PointLight(0xfff6d8, 0, 4.5, 1.6)
-    selectionTopLight.position.set(0, 2.7, 0)
-    selectionTopLight.visible = false
-    scene.add(selectionTopLight)
+    const garageDoorGeometry = new THREE.BoxGeometry(7.5, 6.2, 0.1)
+    const garageDoorMaterial = new THREE.MeshStandardMaterial({
+      color: 0x7a7a7a,
+      roughness: 0.9,
+      metalness: 0.03,
+    })
+    const garageDoor = new THREE.Mesh(garageDoorGeometry, garageDoorMaterial)
+    garageDoor.position.set(0, GARAGE_DOOR_CLOSED_Y, GARAGE_DOOR_Z)
+    garageDoor.castShadow = true
+    garageDoor.receiveShadow = true
+    scene.add(garageDoor)
+
+    const dustParticleCount = 260
+    const dustPositions = new Float32Array(dustParticleCount * 3)
+    for (let i = 0; i < dustParticleCount; i += 1) {
+      const base = i * 3
+      dustPositions[base] = (Math.random() - 0.5) * 4.2
+      dustPositions[base + 1] = Math.random() * 3
+      dustPositions[base + 2] = -Math.random() * 180
+    }
+
+    const dustGeo = new THREE.BufferGeometry()
+    dustGeo.setAttribute('position', new THREE.BufferAttribute(dustPositions, 3))
+    const dustMat = new THREE.PointsMaterial({
+      color: 0xffffff,
+      size: 0.035,
+      opacity: 0.26,
+      transparent: true,
+      depthWrite: false,
+    })
+    const dustSystem = new THREE.Points(dustGeo, dustMat)
+    scene.add(dustSystem)
 
     // Keyboard controls
     function onKeyDown(e) {
@@ -1561,6 +1612,19 @@ function App() {
         motionBlurRef.current.style.opacity = isMoving || performance.now() < blurUntil ? '0.15' : '0'
       }
 
+      const dustArray = dustSystem.geometry.attributes.position.array
+      for (let i = 1; i < dustArray.length; i += 3) {
+        dustArray[i] += 0.00075
+        if (dustArray[i] > 3) {
+          dustArray[i] = 0.08
+        }
+      }
+      dustSystem.geometry.attributes.position.needsUpdate = true
+
+      const doorShouldOpen = performance.now() - loadStartMs >= GARAGE_DOOR_OPEN_DELAY_MS
+      const garageDoorTargetY = doorShouldOpen ? GARAGE_DOOR_OPEN_Y : GARAGE_DOOR_CLOSED_Y
+      garageDoor.position.y += (garageDoorTargetY - garageDoor.position.y) * 0.008
+
       // Keep forward movement smooth, but when viewing a wall center the nearest painting instead of the gap.
       const sideFacing = Math.sin(view.direction)
       const sideFactor = Math.abs(sideFacing)
@@ -1586,42 +1650,6 @@ function App() {
       camera.rotation.y = view.direction
       updatePaintingInfo()
 
-      const activeSelection = paintingInfoRef.current
-      if (activeSelection?.hasSelection) {
-        const selectionParts = String(activeSelection.selectionKey || '').split(':')
-        const selectedZ = Number(selectionParts[1])
-        if (Number.isFinite(selectedZ)) {
-          const isLeft = activeSelection.side === 'left'
-          const sideX = isLeft ? SIDE_LEFT_X : SIDE_RIGHT_X
-          const inwardOffset = isLeft ? 0.3 : -0.3
-          selectionLight.visible = true
-          selectionTopLight.visible = true
-          selectionLight.position.set(sideX + inwardOffset, 2.95, selectedZ + 0.08)
-          selectionLightTarget.position.set(sideX, 1.45, selectedZ)
-          selectionLight.intensity = THREE.MathUtils.lerp(selectionLight.intensity, 2.2, 0.22)
-          selectionTopLight.position.set(sideX, 2.6, selectedZ)
-          selectionTopLight.intensity = THREE.MathUtils.lerp(selectionTopLight.intensity, 1.4, 0.22)
-        } else {
-          selectionLight.intensity = THREE.MathUtils.lerp(selectionLight.intensity, 0, 0.16)
-          selectionTopLight.intensity = THREE.MathUtils.lerp(selectionTopLight.intensity, 0, 0.16)
-          if (selectionLight.intensity < 0.03) {
-            selectionLight.visible = false
-          }
-          if (selectionTopLight.intensity < 0.03) {
-            selectionTopLight.visible = false
-          }
-        }
-      } else {
-        selectionLight.intensity = THREE.MathUtils.lerp(selectionLight.intensity, 0, 0.16)
-        selectionTopLight.intensity = THREE.MathUtils.lerp(selectionTopLight.intensity, 0, 0.16)
-        if (selectionLight.intensity < 0.03) {
-          selectionLight.visible = false
-        }
-        if (selectionTopLight.intensity < 0.03) {
-          selectionTopLight.visible = false
-        }
-      }
-
       // Keep creating new artworks ahead to maintain endless hallway effect
       if (hasMoreCatalogPaintings && artworks.length > 0) {
         const furthestArtwork = Math.min(...artworks.map((a) => a.z))
@@ -1636,6 +1664,7 @@ function App() {
       renderer.render(scene, camera)
 
       if (debugHudRef.current) {
+        const activeSelection = paintingInfoRef.current
         debugHudRef.current.textContent = [
           `pair: ${galleryStepIndex} | display: ${getDisplayPairIndex()}`,
           `player x/z: ${player.position.x.toFixed(2)} / ${player.position.z.toFixed(2)}`,
@@ -1681,9 +1710,13 @@ function App() {
       rightWallGeometry.dispose()
       if (wallMaterial.map) wallMaterial.map.dispose()
       wallMaterial.dispose()
-      scene.remove(selectionLight)
-      scene.remove(selectionLightTarget)
-      scene.remove(selectionTopLight)
+      garageDoorGeometry.dispose()
+      garageDoorMaterial.dispose()
+      scene.remove(garageDoor)
+      dustGeo.dispose()
+      dustMat.dispose()
+      scene.remove(dustSystem)
+      scene.remove(moodSpotlight)
       renderer.dispose()
 
       if (renderer.domElement.parentNode === mountRef.current) {
@@ -1697,8 +1730,11 @@ function App() {
   return (
     <>
       <div className="info">
-        <h3>Endless Hallway Gallery</h3>
-        <p>Explore the gallery and admire the artwork on the walls.</p>
+        <h3>{uiText.title}</h3>
+        <p>{uiText.intro}</p>
+        <button type="button" className="language-toggle" onClick={() => setLanguage((prev) => (prev === 'cs' ? 'en' : 'cs'))}>
+          {uiText.languageButton}
+        </button>
       </div>
 
       <pre className="debug-hud" ref={debugHudRef} aria-live="polite" />
@@ -1713,18 +1749,18 @@ function App() {
       {showCenterModal ? (
         <>
           <div className="painting-modal-backdrop" aria-hidden="true" onClick={() => setModalInfo(null)} />
-          <section className="painting-modal" role="dialog" aria-label="Selected painting">
+          <section className="painting-modal" role="dialog" aria-label={uiText.selectedPainting}>
             <div className="painting-modal__content" aria-live="polite">
-              <p><strong>Name:</strong> {modalInfo.title}</p>
-              <p><strong>Author:</strong> {modalInfo.artist}</p>
-              <p><strong>Year:</strong> {modalInfo.year || 'Unknown'}</p>
-              <p><strong>Style:</strong> {modalInfo.style || 'Unknown'}</p>
-              <p><strong>Description:</strong> {modalInfo.description}</p>
+              <p><strong>{uiText.labelName}:</strong> {modalInfo.title}</p>
+              <p><strong>{uiText.labelAuthor}:</strong> {modalInfo.artist}</p>
+              <p><strong>{uiText.labelYear}:</strong> {modalInfo.year || uiText.unknown}</p>
+              <p><strong>{uiText.labelStyle}:</strong> {modalInfo.style || uiText.unknown}</p>
+              <p><strong>{uiText.labelDescription}:</strong> {modalInfo.description || uiText.noDescription}</p>
             </div>
 
             <div className="painting-modal__actions">
               <button type="button" className="painting-modal__close" onClick={() => setModalInfo(null)}>
-                Close
+                {uiText.close}
               </button>
             </div>
           </section>
@@ -1733,12 +1769,12 @@ function App() {
 
       <div className="controls-hint">
         <p>
-          <strong>Keyboard Controls:</strong>
+          <strong>{uiText.keyboardControls}</strong>
         </p>
-        <p>W - Forward</p>
-        <p>S - Backward</p>
-        <p>Q - Turn Left</p>
-        <p>E - Turn Right</p>
+        <p>{uiText.moveForward}</p>
+        <p>{uiText.moveBackward}</p>
+        <p>{uiText.turnLeft}</p>
+        <p>{uiText.turnRight}</p>
       </div>
 
       <div className="controls">
@@ -1750,7 +1786,7 @@ function App() {
           onTouchStart={(e) => handleControlTouchStart('q', e)}
           onClick={(e) => handleControlClick('q', e)}
         >
-          {'<- Turn Left'}
+          {uiText.buttonTurnLeft}
         </button>
         <button
           type="button"
@@ -1760,7 +1796,7 @@ function App() {
           onTouchStart={(e) => handleControlTouchStart('w', e)}
           onClick={(e) => handleControlClick('w', e)}
         >
-          {'^ Forward'}
+          {uiText.buttonForward}
         </button>
         <button
           type="button"
@@ -1770,7 +1806,7 @@ function App() {
           onTouchStart={(e) => handleControlTouchStart('e', e)}
           onClick={(e) => handleControlClick('e', e)}
         >
-          {'Turn Right ->'}
+          {uiText.buttonTurnRight}
         </button>
         <button
           type="button"
@@ -1780,7 +1816,7 @@ function App() {
           onTouchStart={(e) => handleControlTouchStart('s', e)}
           onClick={(e) => handleControlClick('s', e)}
         >
-          {'v Backward'}
+          {uiText.buttonBackward}
         </button>
       </div>
 

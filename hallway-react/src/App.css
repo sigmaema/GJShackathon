@@ -83,6 +83,15 @@ button:active {
   z-index: 10;
 }
 
+.language-toggle {
+  width: auto;
+  min-width: 128px;
+  height: 36px;
+  margin-top: 10px;
+  padding: 0 10px;
+  font-size: 13px;
+}
+
 .debug-hud {
   position: fixed;
   left: 20px;
@@ -136,32 +145,51 @@ button:active {
   z-index: 2;
   background:
     radial-gradient(
-      circle 75px at var(--flash-x) var(--flash-y),
+      circle 210px at var(--flash-x) var(--flash-y),
       rgba(0, 0, 0, 0) 0,
-      rgba(0, 0, 0, 0.02) 20px,
-      rgba(0, 0, 0, 0.08) 45px,
-      rgba(0, 0, 0, 0.16) 70px,
-      rgba(0, 0, 0, 0.28) 105px,
-      rgba(0, 0, 0, 0.42) 145px,
-      rgba(0, 0, 0, 0.58) 190px,
-      rgba(0, 0, 0, 0.75) 100%
+      rgba(0, 0, 0, 0.02) 28%,
+      rgba(0, 0, 0, 0.08) 50%,
+      rgba(0, 0, 0, 0.2) 70%,
+      rgba(0, 0, 0, 0.4) 86%,
+      rgba(0, 0, 0, 0.66) 100%
+    ),
+    radial-gradient(
+      circle 120px at var(--flash-x) var(--flash-y),
+      rgba(0, 0, 0, 0) 0,
+      rgba(0, 0, 0, 0.02) 18%,
+      rgba(0, 0, 0, 0.06) 34%,
+      rgba(0, 0, 0, 0.14) 52%,
+      rgba(0, 0, 0, 0.28) 68%,
+      rgba(0, 0, 0, 0.46) 82%,
+      rgba(0, 0, 0, 0.68) 100%
     );
-  transition: background-position 0.04s linear;
+  filter: blur(1.6px);
+  transition: background 0.05s linear, filter 0.15s ease;
 }
 
 .cursor-light-mask--focused {
   background:
     radial-gradient(
-      circle 95px at var(--flash-x) var(--flash-y),
+      circle 260px at var(--flash-x) var(--flash-y),
       rgba(0, 0, 0, 0) 0,
-      rgba(0, 0, 0, 0.01) 28px,
-      rgba(0, 0, 0, 0.04) 58px,
-      rgba(0, 0, 0, 0.1) 94px,
-      rgba(0, 0, 0, 0.2) 134px,
-      rgba(0, 0, 0, 0.34) 180px,
-      rgba(0, 0, 0, 0.52) 236px,
-      rgba(0, 0, 0, 0.72) 100%
+      rgba(0, 0, 0, 0.015) 30%,
+      rgba(0, 0, 0, 0.065) 52%,
+      rgba(0, 0, 0, 0.16) 72%,
+      rgba(0, 0, 0, 0.34) 88%,
+      rgba(0, 0, 0, 0.6) 100%
+    ),
+    radial-gradient(
+      circle 150px at var(--flash-x) var(--flash-y),
+      rgba(0, 0, 0, 0) 0,
+      rgba(0, 0, 0, 0.008) 22%,
+      rgba(0, 0, 0, 0.03) 38%,
+      rgba(0, 0, 0, 0.085) 54%,
+      rgba(0, 0, 0, 0.17) 68%,
+      rgba(0, 0, 0, 0.31) 82%,
+      rgba(0, 0, 0, 0.5) 92%,
+      rgba(0, 0, 0, 0.7) 100%
     );
+  filter: blur(2.2px);
 }
 
 .painting-modal-backdrop {
