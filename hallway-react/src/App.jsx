@@ -7,11 +7,20 @@ let catalogRowsCache = null
 let catalogRowsPromise = null
 
 function App() {
+  const AUDIO_BASE_VOLUME = 0.5
+  const AUDIO_FADE_OUT_MS = 450
   const mountRef = useRef(null)
   const motionBlurRef = useRef(null)
   const cursorLightRef = useRef(null)
+  const debugHudRef = useRef(null)
   const audioRef = useRef(null)
-  const pressedThisFrameRef = useRef({})
+  const audioFadeRafRef = useRef(0)
+  const audioFadeTokenRef = useRef(0)
+  const audioUnlockedRef = useRef(false)
+  const pendingMusicCandidatesRef = useRef([])
+  const pendingMusicIndexRef = useRef(0)
+  const pendingActionRef = useRef(null)
+  const heldKeysRef = useRef({})
   const uiCardLogRef = useRef({ visible: false, key: '' })
   const paintingInfoRef = useRef(null)
   const [paintingInfo, setPaintingInfo] = useState({
@@ -28,14 +37,165 @@ function App() {
   })
   const [modalInfo, setModalInfo] = useState(null)
 
+  function cancelAudioFade() {
+    if (audioFadeRafRef.current) {
+      cancelAnimationFrame(audioFadeRafRef.current)
+      audioFadeRafRef.current = 0
+    }
+    audioFadeTokenRef.current += 1
+  }
+
+  function fadeOutAndStopAudio(audio) {
+    if (!audio || !audio.src) {
+      return
+    }
+
+    cancelAudioFade()
+    const startVolume = typeof audio.volume === 'number' ? audio.volume : AUDIO_BASE_VOLUME
+    const fadeToken = audioFadeTokenRef.current
+    const startTime = performance.now()
+
+    const tick = (now) => {
+      if (fadeToken !== audioFadeTokenRef.current) {
+        return
+      }
+
+      const t = Math.min(1, (now - startTime) / AUDIO_FADE_OUT_MS)
+      audio.volume = Math.max(0, startVolume * (1 - t))
+
+      if (t < 1) {
+        audioFadeRafRef.current = requestAnimationFrame(tick)
+        return
+      }
+
+      audio.pause()
+      audio.removeAttribute('src')
+      audio.load()
+      audio.volume = AUDIO_BASE_VOLUME
+      audioFadeRafRef.current = 0
+      console.log('[audio] faded out and stopped')
+    }
+
+    audioFadeRafRef.current = requestAnimationFrame(tick)
+  }
+
+  const mapKeyToAction = (key) => {
+    const normalizedKey = String(key).toLowerCase()
+    const actionMap = {
+      w: 'forward',
+      arrowup: 'forward',
+      s: 'backward',
+      arrowdown: 'backward',
+      q: 'turnLeft',
+      a: 'turnLeft',
+      arrowleft: 'turnLeft',
+      e: 'turnRight',
+      d: 'turnRight',
+      arrowright: 'turnRight',
+    }
+    return actionMap[normalizedKey] || null
+  }
+
+  const buildMusicCandidates = (rawMusic) => {
+    if (!rawMusic || typeof rawMusic !== 'string') {
+      return []
+    }
+
+    const value = rawMusic.trim()
+    if (!value) {
+      return []
+    }
+
+    const supabaseBase = String(import.meta.env.VITE_SUPABASE_URL || '').replace(/\/+$/, '')
+    const candidates = []
+
+    const addCandidate = (url) => {
+      if (!url || candidates.includes(url)) {
+        return
+      }
+      candidates.push(url)
+    }
+
+    if (/^(https?:|blob:|data:)/i.test(value)) {
+      addCandidate(value)
+      return candidates
+    }
+
+    if (value.startsWith('//')) {
+      addCandidate(`${window.location.protocol}${value}`)
+      return candidates
+    }
+
+    if (value.startsWith('/')) {
+      addCandidate(new URL(value, window.location.origin).href)
+      if (supabaseBase) {
+        addCandidate(`${supabaseBase}${value}`)
+      }
+      return candidates
+    }
+
+    // Candidate as local/public-relative asset.
+    addCandidate(new URL(value, window.location.href).href)
+
+    if (supabaseBase) {
+      if (/^storage\/v1\/object\/public\//i.test(value)) {
+        addCandidate(`${supabaseBase}/${value}`)
+      } else if (value.includes('/')) {
+        // Common DB format: "bucket/path/to/file.mp3"
+        addCandidate(`${supabaseBase}/storage/v1/object/public/${value}`)
+      }
+    }
+
+    return candidates
+  }
+
   useEffect(() => {
     paintingInfoRef.current = paintingInfo
   }, [paintingInfo])
 
   const pressKey = (key) => {
-    if (!pressedThisFrameRef.current[key]) {
-      pressedThisFrameRef.current[key] = true
+    const normalizedKey = String(key).toLowerCase()
+    const action = mapKeyToAction(normalizedKey)
+    if (action) {
+      pendingActionRef.current = action
+      console.log('[input] pending action', { key: normalizedKey, action })
     }
+  }
+
+  const enqueueAction = (action, source) => {
+    if (!action) {
+      return
+    }
+    pendingActionRef.current = action
+    console.log('[input] pending action (direct)', { action, source })
+  }
+
+  const handleControlPointerDown = (key, e) => {
+    e.preventDefault()
+    e.stopPropagation()
+    const action = mapKeyToAction(key)
+    enqueueAction(action, 'button:pointerdown')
+  }
+
+  const handleControlMouseDown = (key, e) => {
+    e.preventDefault()
+    e.stopPropagation()
+    const action = mapKeyToAction(key)
+    enqueueAction(action, 'button:mousedown')
+  }
+
+  const handleControlTouchStart = (key, e) => {
+    e.preventDefault()
+    e.stopPropagation()
+    const action = mapKeyToAction(key)
+    enqueueAction(action, 'button:touchstart')
+  }
+
+  const handleControlClick = (key, e) => {
+    e.preventDefault()
+    e.stopPropagation()
+    const action = mapKeyToAction(key)
+    enqueueAction(action, 'button:click')
   }
 
   useEffect(() => {
@@ -68,14 +228,30 @@ function App() {
   ])
 
   useEffect(() => {
-    if (!modalInfo) {
+    if (!modalInfo || !paintingInfo.hasSelection) {
       return
     }
 
-    if (paintingInfo.hasSelection) {
+    if (
+      modalInfo.selectionKey !== paintingInfo.selectionKey
+      || modalInfo.title !== paintingInfo.title
+      || modalInfo.artist !== paintingInfo.artist
+      || modalInfo.year !== paintingInfo.year
+      || modalInfo.style !== paintingInfo.style
+      || modalInfo.description !== paintingInfo.description
+    ) {
       setModalInfo(paintingInfo)
     }
-  }, [modalInfo, paintingInfo])
+  }, [
+    modalInfo,
+    paintingInfo.hasSelection,
+    paintingInfo.selectionKey,
+    paintingInfo.title,
+    paintingInfo.artist,
+    paintingInfo.year,
+    paintingInfo.style,
+    paintingInfo.description,
+  ])
 
   useEffect(() => {
     function onEscape(e) {
@@ -92,7 +268,8 @@ function App() {
     if (!audioRef.current) {
       const audio = new Audio()
       audio.loop = true
-      audio.volume = 0.5
+      audio.volume = AUDIO_BASE_VOLUME
+      audio.preload = 'auto'
       audioRef.current = audio
     }
 
@@ -100,28 +277,145 @@ function App() {
     const targetMusic = paintingInfo.hasSelection ? paintingInfo.musicUrl : ''
 
     if (!targetMusic) {
-      audio.pause()
-      audio.removeAttribute('src')
-      audio.load()
+      pendingMusicCandidatesRef.current = []
+      pendingMusicIndexRef.current = 0
+      fadeOutAndStopAudio(audio)
       return
     }
 
-    const resolvedTarget = new URL(targetMusic, window.location.href).href
-    if (audio.src !== resolvedTarget) {
-      audio.src = targetMusic
-      audio.currentTime = 0
+    cancelAudioFade()
+    audio.volume = AUDIO_BASE_VOLUME
+
+    const candidates = buildMusicCandidates(targetMusic)
+    if (candidates.length === 0) {
+      console.log('[audio] no valid music candidates for selection', {
+        selectionKey: paintingInfo.selectionKey,
+        rawMusic: targetMusic,
+      })
+      return
     }
 
-    audio.play().catch((err) => {
-      console.log('[audio] play blocked or failed', err)
+    pendingMusicCandidatesRef.current = candidates
+    pendingMusicIndexRef.current = 0
+
+    const applyCandidate = (index) => {
+      const candidate = candidates[index]
+      if (!candidate) {
+        return false
+      }
+
+      const resolvedTarget = new URL(candidate, window.location.href).href
+      if (audio.src !== resolvedTarget) {
+        audio.src = candidate
+        audio.currentTime = 0
+      }
+
+      console.log('[audio] candidate selected', {
+        selectionKey: paintingInfo.selectionKey,
+        candidateIndex: index,
+        candidate,
+      })
+      return true
+    }
+
+    const advanceCandidate = () => {
+      const nextIndex = pendingMusicIndexRef.current + 1
+      if (nextIndex >= candidates.length) {
+        console.log('[audio] exhausted all music candidates', {
+          selectionKey: paintingInfo.selectionKey,
+          candidates,
+        })
+        return
+      }
+
+      pendingMusicIndexRef.current = nextIndex
+      if (applyCandidate(nextIndex)) {
+        audio.play().then(() => {
+          audioUnlockedRef.current = true
+          console.log('[audio] playback started on fallback candidate', {
+            selectionKey: paintingInfo.selectionKey,
+            candidateIndex: nextIndex,
+          })
+        }).catch((err) => {
+          if (err?.name === 'NotAllowedError') {
+            console.log('[audio] autoplay blocked on fallback candidate', err)
+            return
+          }
+          console.log('[audio] fallback candidate play failed', err)
+          advanceCandidate()
+        })
+      }
+    }
+
+    const onAudioError = () => {
+      console.log('[audio] load error for candidate', {
+        selectionKey: paintingInfo.selectionKey,
+        candidateIndex: pendingMusicIndexRef.current,
+        src: audio.src,
+      })
+      advanceCandidate()
+    }
+
+    audio.addEventListener('error', onAudioError)
+
+    if (!applyCandidate(0)) {
+      audio.removeEventListener('error', onAudioError)
+      return
+    }
+
+    audio.play().then(() => {
+      audioUnlockedRef.current = true
+      console.log('[audio] playback started', {
+        selectionKey: paintingInfo.selectionKey,
+        src: audio.src,
+      })
+    }).catch((err) => {
+      if (err?.name === 'NotAllowedError') {
+        console.log('[audio] autoplay blocked, waiting for user gesture', err)
+        return
+      }
+      console.log('[audio] initial candidate play failed', err)
+      advanceCandidate()
     })
+
+    return () => {
+      audio.removeEventListener('error', onAudioError)
+    }
   }, [paintingInfo.hasSelection, paintingInfo.musicUrl, paintingInfo.selectionKey])
 
+  useEffect(() => {
+    const unlockAudio = () => {
+      audioUnlockedRef.current = true
+      const audio = audioRef.current
+      if (!audio || !audio.paused || !audio.src) {
+        return
+      }
+
+      audio.play().then(() => {
+        console.log('[audio] playback resumed after user gesture', { src: audio.src })
+      }).catch((err) => {
+        console.log('[audio] user gesture play failed', err)
+      })
+    }
+
+    window.addEventListener('pointerdown', unlockAudio, { passive: true })
+    window.addEventListener('touchstart', unlockAudio, { passive: true })
+    window.addEventListener('keydown', unlockAudio)
+
+    return () => {
+      window.removeEventListener('pointerdown', unlockAudio)
+      window.removeEventListener('touchstart', unlockAudio)
+      window.removeEventListener('keydown', unlockAudio)
+    }
+  }, [])
+
   useEffect(() => () => {
+    cancelAudioFade()
     if (audioRef.current) {
       audioRef.current.pause()
       audioRef.current.removeAttribute('src')
       audioRef.current.load()
+      audioRef.current.volume = AUDIO_BASE_VOLUME
       audioRef.current = null
     }
   }, [])
@@ -166,7 +460,7 @@ function App() {
     const player = {
       position: new THREE.Vector3(0, 0, 0),
       direction: 0,
-      moveDistance: 5,
+      moveDistance: 2,
       rotationSpeed: Math.PI / 2,
     }
 
@@ -276,10 +570,10 @@ function App() {
     const PAIR_GAP = 1.1
     const SIDE_LEFT_X = -2.4
     const SIDE_RIGHT_X = 2.4
-    const FALLBACK_MAX_Z_DISTANCE = 4.8
+    const FALLBACK_MAX_Z_DISTANCE = 9.5
     const SIDE_LOOKAHEAD_FACTOR = 0.2
-    const START_BACK_OFFSET = 2
-    const START_OFFSET_GAP_RATIO_LIMIT = 0.42
+    const SPAWN_Z = 1
+    const MAX_ARTWORK_COUNT = 30
 
     const fallbackCatalog = [
       { title: 'Untitled Study I', artist: 'Unknown', year: '1881', style: 'Unknown', description: 'Oil on panel.' },
@@ -292,6 +586,9 @@ function App() {
 
     let paintingCatalog = []
     let catalogCursor = 0
+    let hasMoreCatalogPaintings = true
+    const pairSequence = []
+    let galleryStepIndex = 0
     let rafId = 0
     let lastLoggedSelectionKey = ''
     let loggedNoSelection = false
@@ -300,7 +597,7 @@ function App() {
     let smoothedCameraZ = player.position.z
     let lockedSelection = null
     // Keep the last selected painting visible through short raycast gaps while stepping.
-    const SELECTION_HOLD_MS = 1400
+    const SELECTION_HOLD_MS = 450
 
     function normalizeImageUrl(painting) {
       const raw = painting.photo_link || painting.image_url || painting.url || painting.image || painting.image_path || ''
@@ -459,17 +756,19 @@ function App() {
             }))
           )
 
+          const limitedCatalog = withImageMetadata.slice(0, MAX_ARTWORK_COUNT)
+
           console.log('[supabase] loaded paintings', {
             sourceTable,
-            count: withImageMetadata.length,
-            withImageUrl: withImageMetadata.filter((p) => Boolean(p.image_url)).length,
+            count: limitedCatalog.length,
+            withImageUrl: limitedCatalog.filter((p) => Boolean(p.image_url)).length,
           })
-          console.log('[supabase] photo_link values', withImageMetadata.map((p) => ({
+          console.log('[supabase] photo_link values', limitedCatalog.map((p) => ({
             title: p.title,
             photo_link: p.image_url,
           })))
 
-          return withImageMetadata
+          return limitedCatalog
         })()
 
         paintingCatalog = await catalogRowsPromise
@@ -487,14 +786,67 @@ function App() {
         paintingCatalog = fallbackCatalog
       }
 
-      const painting = paintingCatalog[catalogCursor % paintingCatalog.length]
+      if (catalogCursor >= paintingCatalog.length) {
+        hasMoreCatalogPaintings = false
+        return null
+      }
+
+      const painting = paintingCatalog[catalogCursor]
       catalogCursor += 1
+      if (catalogCursor >= paintingCatalog.length) {
+        hasMoreCatalogPaintings = false
+      }
       return painting
     }
 
+    function getDisplayPairIndex() {
+      const maxIndex = Math.max(0, pairSequence.length - 1)
+      let displayIndex = 0
+
+      // Progression rule: +1,+1,+2 repeating by pair groups of 3,
+      // plus manual boundaries between 3/4 -> 5/6, 9/10 -> 11/12,
+      // 19/20 -> 21/22, 21/22 -> 23/24, and 27/28 -> 29/30.
+      // requiredStep(i) = i + floor(i / 3)
+      //   + (i >= 2 ? 1 : 0) + (i >= 5 ? 1 : 0)
+      //   + (i >= 10 ? 1 : 0) + (i >= 11 ? 1 : 0) + (i >= 14 ? 1 : 0)
+      for (let i = 0; i <= maxIndex; i += 1) {
+        const requiredStep = i + Math.floor(i / 3) + (i >= 2 ? 1 : 0) + (i >= 5 ? 1 : 0) + (i >= 10 ? 1 : 0) + (i >= 11 ? 1 : 0) + (i >= 14 ? 1 : 0)
+        if (galleryStepIndex >= requiredStep) {
+          displayIndex = i
+        } else {
+          break
+        }
+      }
+
+      return displayIndex
+    }
+
     // Create hallway floor
+    const floorTexture = new THREE.TextureLoader().load('/floor.png')
+    floorTexture.wrapS = THREE.RepeatWrapping
+    floorTexture.wrapT = THREE.RepeatWrapping
+    floorTexture.repeat.set(2.5, 180)
+    floorTexture.colorSpace = THREE.SRGBColorSpace
+    floorTexture.anisotropy = 1
+    floorTexture.magFilter = THREE.LinearFilter
+    floorTexture.minFilter = THREE.LinearMipmapLinearFilter
+
+    const ceilingTexture = floorTexture.clone()
+    ceilingTexture.wrapS = THREE.RepeatWrapping
+    ceilingTexture.wrapT = THREE.RepeatWrapping
+    ceilingTexture.repeat.set(2.5, 180)
+    ceilingTexture.colorSpace = THREE.SRGBColorSpace
+    ceilingTexture.anisotropy = 1
+    ceilingTexture.magFilter = THREE.LinearFilter
+    ceilingTexture.minFilter = THREE.LinearMipmapLinearFilter
+
     const floorGeometry = new THREE.PlaneGeometry(5, 500)
-    const floorMaterial = new THREE.MeshStandardMaterial({ color: 0x444444 })
+    const floorMaterial = new THREE.MeshStandardMaterial({
+      map: floorTexture,
+      color: 0xffffff,
+      roughness: 0.9,
+      metalness: 0.02,
+    })
     const floor = new THREE.Mesh(floorGeometry, floorMaterial)
     floor.rotation.x = -Math.PI / 2
     floor.receiveShadow = true
@@ -503,7 +855,12 @@ function App() {
 
     // Create hallway ceiling
     const ceilingGeometry = new THREE.PlaneGeometry(5, 500)
-    const ceilingMaterial = new THREE.MeshStandardMaterial({ color: 0x666666 })
+    const ceilingMaterial = new THREE.MeshStandardMaterial({
+      map: ceilingTexture,
+      color: 0xf1f1f1,
+      roughness: 0.9,
+      metalness: 0.02,
+    })
     const ceiling = new THREE.Mesh(ceilingGeometry, ceilingMaterial)
     ceiling.rotation.x = Math.PI / 2
     ceiling.position.y = 3
@@ -753,11 +1110,16 @@ function App() {
 
       addArtwork(leftPainting, SIDE_LEFT_X, z, Math.PI / 2, 'left', leftHue)
       addArtwork(rightPainting, SIDE_RIGHT_X, z, -Math.PI / 2, 'right', rightHue)
+
+      pairSequence.push({ z, leftPainting, rightPainting })
     }
 
     function addArtworkPair(z) {
       const leftPainting = nextCatalogPainting()
       const rightPainting = nextCatalogPainting()
+      if (!leftPainting || !rightPainting) {
+        return null
+      }
       addArtworkPairAt(z, leftPainting, rightPainting)
       return getPairStep(leftPainting, rightPainting)
     }
@@ -765,6 +1127,9 @@ function App() {
     function addArtworkPairAfter(currentFurthestZ) {
       const leftPainting = nextCatalogPainting()
       const rightPainting = nextCatalogPainting()
+      if (!leftPainting || !rightPainting) {
+        return null
+      }
       const step = getPairStep(leftPainting, rightPainting)
       const z = currentFurthestZ - step
       addArtworkPairAt(z, leftPainting, rightPainting)
@@ -784,6 +1149,27 @@ function App() {
         }
       }
       return nearest
+    }
+
+    function findArtworkBySelectionKey(selectionKey) {
+      if (!selectionKey) {
+        return null
+      }
+
+      const [side, zRaw] = String(selectionKey).split(':')
+      const targetZ = Number(zRaw)
+      if (!Number.isFinite(targetZ)) {
+        return null
+      }
+
+      for (let i = 0; i < artworks.length; i += 1) {
+        const a = artworks[i]
+        if (a.side === side && Math.abs(a.z - targetZ) < 0.0001) {
+          return a
+        }
+      }
+
+      return null
     }
 
     function updatePaintingInfo() {
@@ -815,23 +1201,23 @@ function App() {
       const intersections = raycaster.intersectObjects(artworkMeshes, false)
       let hit = intersections[0]
 
-      // Fallback: if center ray misses, use nearest painting on the wall side the user is facing.
+      // Fallback: if center ray misses, use deterministic pair slot by movement index.
       if (!hit || !hit.object || !hit.object.userData || !hit.object.userData.painting) {
         const direction = ((view.direction % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2)
         const sideFacing = Math.sin(direction)
         const sideStrength = Math.abs(sideFacing)
 
-        // Accept a wider sideways range so selection can be reacquired reliably while turning.
         if (sideStrength > 0.35) {
           const side = sideFacing > 0 ? 'left' : 'right'
-          const fallback = getNearestArtworkOnSide(side, view.position.z, FALLBACK_MAX_Z_DISTANCE)
-          if (fallback && fallback.painting) {
+          const slot = pairSequence[getDisplayPairIndex()]
+          if (slot) {
+            const slotPainting = side === 'left' ? slot.leftPainting : slot.rightPainting
             hit = {
               object: {
                 userData: {
-                  painting: fallback.painting,
-                  side: fallback.side,
-                  z: fallback.z,
+                  painting: slotPainting,
+                  side,
+                  z: slot.z,
                 },
               },
             }
@@ -883,6 +1269,14 @@ function App() {
           music_url: nextSelection.musicUrl,
           side: hit.object.userData.side,
           z: hit.object.userData.z,
+          pairIndex: galleryStepIndex,
+          displayPairIndex: getDisplayPairIndex(),
+          playerX: Number(player.position.x.toFixed(2)),
+          playerZ: Number(player.position.z.toFixed(2)),
+          viewX: Number(view.position.x.toFixed(2)),
+          viewZ: Number(view.position.z.toFixed(2)),
+          cameraX: Number(camera.position.x.toFixed(2)),
+          cameraZ: Number(camera.position.z.toFixed(2)),
         })
         lastLoggedSelectionKey = selectionKey
         loggedNoSelection = false
@@ -897,20 +1291,17 @@ function App() {
       let z = 0
       while (z >= -70) {
         const step = addArtworkPair(z)
+        if (!step) {
+          break
+        }
         z -= step
       }
 
-      // Start aligned with the second pair so initial left/right selection opens paintings 3 and 4.
-      const uniquePairZ = [...new Set(artworks.map((a) => a.z))].sort((a, b) => b - a)
-      if (uniquePairZ.length > 1) {
-        const gapToFirstPair = uniquePairZ[0] - uniquePairZ[1]
-        // Keep startup position closer to pair 2 than pair 1 even with large manual offsets.
-        const safeOffset = Math.min(START_BACK_OFFSET, gapToFirstPair * START_OFFSET_GAP_RATIO_LIMIT)
-        const startZ = uniquePairZ[1] + safeOffset
-        player.position.z = startZ
-        view.position.z = startZ
-        smoothedCameraZ = startZ
-      }
+      // Spawn at z=1 and show paintings 1/2 first.
+      player.position.z = SPAWN_Z
+      view.position.z = SPAWN_Z
+      smoothedCameraZ = SPAWN_Z
+      galleryStepIndex = 0
     }
 
     // Lighting
@@ -924,12 +1315,38 @@ function App() {
     directionalLight.shadow.mapSize.height = 2048
     scene.add(directionalLight)
 
+    const selectionLightTarget = new THREE.Object3D()
+    scene.add(selectionLightTarget)
+
+    const selectionLight = new THREE.SpotLight(0xfff0ce, 0, 14, THREE.MathUtils.degToRad(30), 0.45, 1.3)
+    selectionLight.position.set(0, 2.85, 0)
+    selectionLight.castShadow = false
+    selectionLight.visible = false
+    selectionLight.target = selectionLightTarget
+    scene.add(selectionLight)
+
+    // Separate overhead lamp directly above the selected painting.
+    const selectionTopLight = new THREE.PointLight(0xfff6d8, 0, 4.5, 1.6)
+    selectionTopLight.position.set(0, 2.7, 0)
+    selectionTopLight.visible = false
+    scene.add(selectionTopLight)
+
     // Keyboard controls
     function onKeyDown(e) {
       const key = e.key.toLowerCase()
-      if (!pressedThisFrameRef.current[key]) {
-        pressedThisFrameRef.current[key] = true
+      const movementKeys = new Set(['w', 'a', 's', 'd', 'q', 'e', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright'])
+      if (movementKeys.has(key)) {
+        e.preventDefault()
       }
+      heldKeysRef.current[key] = true
+      if (!e.repeat) {
+        pressKey(key)
+      }
+    }
+
+    function onKeyUp(e) {
+      const key = e.key.toLowerCase()
+      heldKeysRef.current[key] = false
     }
 
     // Handle window resize
@@ -979,6 +1396,15 @@ function App() {
         return
       }
 
+      // Only scene clicks should run raycast/modal logic.
+      if (!(targetEl instanceof HTMLCanvasElement) || targetEl !== renderer.domElement) {
+        console.log('[click] ignored: non-scene click target')
+        return
+      }
+
+      // Reset stale lock before resolving this click.
+      lockedSelection = null
+
       if (targetEl instanceof HTMLCanvasElement && targetEl !== renderer.domElement) {
         console.log('[click] ignored: non-active canvas target', {
           activeCanvasClass: renderer.domElement.className || null,
@@ -998,6 +1424,11 @@ function App() {
         height: Number(rect.height.toFixed(1)),
         withinCanvasRect,
       })
+
+      if (!withinCanvasRect) {
+        console.log('[click] ignored: pointer outside active canvas rect')
+        return
+      }
 
       const x = ((e.clientX - rect.left) / rect.width) * 2 - 1
       const y = -((e.clientY - rect.top) / rect.height) * 2 + 1
@@ -1029,7 +1460,6 @@ function App() {
             title: selection.title,
             artist: selection.artist,
           })
-          lockedSelection = selection
           lastValidSelection = selection
           lastValidSelectionAt = performance.now()
           setPaintingInfo(selection)
@@ -1039,7 +1469,7 @@ function App() {
       }
 
       // If user clicks while looking at a painting but misses exact geometry, open focused selection.
-      const fallbackSelection = currentPaintingInfo?.hasSelection ? currentPaintingInfo : lastValidSelection
+      const fallbackSelection = currentPaintingInfo?.hasSelection ? currentPaintingInfo : null
       if (fallbackSelection) {
         console.log('[click] opening modal from focused fallback', {
           selectionKey: fallbackSelection.selectionKey,
@@ -1057,7 +1487,8 @@ function App() {
 
     updateCursorLightPosition(window.innerWidth / 2, window.innerHeight / 2)
 
-    window.addEventListener('keydown', onKeyDown)
+    window.addEventListener('keydown', onKeyDown, { capture: true })
+    window.addEventListener('keyup', onKeyUp, { capture: true })
     window.addEventListener('resize', onResize)
     window.addEventListener('pointermove', onPointerMove)
     window.addEventListener('touchmove', onTouchMove, { passive: true })
@@ -1069,26 +1500,29 @@ function App() {
       rafId = requestAnimationFrame(animate)
 
       let isMoving = false
-      const pressedThisFrame = pressedThisFrameRef.current
 
       // Handle keyboard/button input as animated one-step actions.
       if (!stepAnimation.active) {
-        if (pressedThisFrame.w) {
-          startStep('forward')
-        } else if (pressedThisFrame.s) {
-          startStep('backward')
-        } else if (pressedThisFrame.q || pressedThisFrame.a) {
-          startStep('turnLeft')
-        } else if (pressedThisFrame.e || pressedThisFrame.d) {
-          startStep('turnRight')
-        } else if (pressedThisFrame.arrowup) {
-          startStep('forward')
-        } else if (pressedThisFrame.arrowdown) {
-          startStep('backward')
-        } else if (pressedThisFrame.arrowleft) {
-          startStep('turnLeft')
-        } else if (pressedThisFrame.arrowright) {
-          startStep('turnRight')
+        let nextAction = pendingActionRef.current
+        if (!nextAction) {
+          const keyPriority = ['w', 'arrowup', 's', 'arrowdown', 'q', 'a', 'arrowleft', 'e', 'd', 'arrowright']
+          for (let i = 0; i < keyPriority.length; i += 1) {
+            const key = keyPriority[i]
+            if (heldKeysRef.current[key]) {
+              nextAction = mapKeyToAction(key)
+              break
+            }
+          }
+        }
+
+        if (nextAction) {
+          if (nextAction === 'forward') {
+            galleryStepIndex += 1
+          } else if (nextAction === 'backward') {
+            galleryStepIndex = Math.max(galleryStepIndex - 1, 0)
+          }
+          startStep(nextAction)
+          pendingActionRef.current = null
         }
       }
 
@@ -1107,11 +1541,20 @@ function App() {
           view.position.copy(stepAnimation.toPosition)
           view.direction = stepAnimation.toDirection
           stepAnimation.active = false
+
+          console.log('[movement] stepComplete', {
+            pairIndex: galleryStepIndex,
+            displayPairIndex: getDisplayPairIndex(),
+            playerX: Number(player.position.x.toFixed(2)),
+            playerZ: Number(player.position.z.toFixed(2)),
+            viewX: Number(view.position.x.toFixed(2)),
+            viewZ: Number(view.position.z.toFixed(2)),
+            cameraX: Number(camera.position.x.toFixed(2)),
+            cameraZ: Number(camera.position.z.toFixed(2)),
+            direction: Number(view.direction.toFixed(3)),
+          })
         }
       }
-
-      // Clear pressed keys for next frame
-      pressedThisFrameRef.current = {}
 
       // Motion blur effect
       if (motionBlurRef.current) {
@@ -1129,10 +1572,10 @@ function App() {
       let targetCameraZ = baseCameraZ
 
       const side = sideFacing >= 0 ? 'left' : 'right'
-      const nearestOnSide = getNearestArtworkOnSide(side, view.position.z, player.moveDistance)
-      if (nearestOnSide) {
+      const activePair = pairSequence[getDisplayPairIndex()] || null
+      if (activePair) {
         const centerBlend = THREE.MathUtils.smoothstep(sideFactor, 0.6, 0.95)
-        targetCameraZ = THREE.MathUtils.lerp(baseCameraZ, nearestOnSide.z, centerBlend)
+        targetCameraZ = THREE.MathUtils.lerp(baseCameraZ, activePair.z, centerBlend)
       }
 
       smoothedCameraZ = THREE.MathUtils.lerp(smoothedCameraZ, targetCameraZ, 0.22)
@@ -1143,13 +1586,64 @@ function App() {
       camera.rotation.y = view.direction
       updatePaintingInfo()
 
+      const activeSelection = paintingInfoRef.current
+      if (activeSelection?.hasSelection) {
+        const selectionParts = String(activeSelection.selectionKey || '').split(':')
+        const selectedZ = Number(selectionParts[1])
+        if (Number.isFinite(selectedZ)) {
+          const isLeft = activeSelection.side === 'left'
+          const sideX = isLeft ? SIDE_LEFT_X : SIDE_RIGHT_X
+          const inwardOffset = isLeft ? 0.3 : -0.3
+          selectionLight.visible = true
+          selectionTopLight.visible = true
+          selectionLight.position.set(sideX + inwardOffset, 2.95, selectedZ + 0.08)
+          selectionLightTarget.position.set(sideX, 1.45, selectedZ)
+          selectionLight.intensity = THREE.MathUtils.lerp(selectionLight.intensity, 2.2, 0.22)
+          selectionTopLight.position.set(sideX, 2.6, selectedZ)
+          selectionTopLight.intensity = THREE.MathUtils.lerp(selectionTopLight.intensity, 1.4, 0.22)
+        } else {
+          selectionLight.intensity = THREE.MathUtils.lerp(selectionLight.intensity, 0, 0.16)
+          selectionTopLight.intensity = THREE.MathUtils.lerp(selectionTopLight.intensity, 0, 0.16)
+          if (selectionLight.intensity < 0.03) {
+            selectionLight.visible = false
+          }
+          if (selectionTopLight.intensity < 0.03) {
+            selectionTopLight.visible = false
+          }
+        }
+      } else {
+        selectionLight.intensity = THREE.MathUtils.lerp(selectionLight.intensity, 0, 0.16)
+        selectionTopLight.intensity = THREE.MathUtils.lerp(selectionTopLight.intensity, 0, 0.16)
+        if (selectionLight.intensity < 0.03) {
+          selectionLight.visible = false
+        }
+        if (selectionTopLight.intensity < 0.03) {
+          selectionTopLight.visible = false
+        }
+      }
+
       // Keep creating new artworks ahead to maintain endless hallway effect
-      const furthestArtwork = Math.min(...artworks.map((a) => a.z))
-      if (player.position.z < furthestArtwork - 15) {
-        addArtworkPairAfter(furthestArtwork)
+      if (hasMoreCatalogPaintings && artworks.length > 0) {
+        const furthestArtwork = Math.min(...artworks.map((a) => a.z))
+        if (player.position.z < furthestArtwork - 15) {
+          const newFurthest = addArtworkPairAfter(furthestArtwork)
+          if (newFurthest === null) {
+            hasMoreCatalogPaintings = false
+          }
+        }
       }
 
       renderer.render(scene, camera)
+
+      if (debugHudRef.current) {
+        debugHudRef.current.textContent = [
+          `pair: ${galleryStepIndex} | display: ${getDisplayPairIndex()}`,
+          `player x/z: ${player.position.x.toFixed(2)} / ${player.position.z.toFixed(2)}`,
+          `view x/z: ${view.position.x.toFixed(2)} / ${view.position.z.toFixed(2)}`,
+          `camera x/z: ${camera.position.x.toFixed(2)} / ${camera.position.z.toFixed(2)}`,
+          `selection: ${activeSelection?.title || '-'} (${activeSelection?.selectionKey || '-'})`,
+        ].join('\n')
+      }
     }
 
     initializeGallery().then(() => {
@@ -1158,7 +1652,8 @@ function App() {
 
     return () => {
       cancelAnimationFrame(rafId)
-      window.removeEventListener('keydown', onKeyDown)
+      window.removeEventListener('keydown', onKeyDown, { capture: true })
+      window.removeEventListener('keyup', onKeyUp, { capture: true })
       window.removeEventListener('resize', onResize)
       window.removeEventListener('pointermove', onPointerMove)
       window.removeEventListener('touchmove', onTouchMove)
@@ -1177,13 +1672,18 @@ function App() {
       })
 
       floorGeometry.dispose()
+      if (floorMaterial.map) floorMaterial.map.dispose()
       floorMaterial.dispose()
       ceilingGeometry.dispose()
+      if (ceilingMaterial.map) ceilingMaterial.map.dispose()
       ceilingMaterial.dispose()
       leftWallGeometry.dispose()
       rightWallGeometry.dispose()
       if (wallMaterial.map) wallMaterial.map.dispose()
       wallMaterial.dispose()
+      scene.remove(selectionLight)
+      scene.remove(selectionLightTarget)
+      scene.remove(selectionTopLight)
       renderer.dispose()
 
       if (renderer.domElement.parentNode === mountRef.current) {
@@ -1201,6 +1701,8 @@ function App() {
         <p>Explore the gallery and admire the artwork on the walls.</p>
       </div>
 
+      <pre className="debug-hud" ref={debugHudRef} aria-live="polite" />
+
       <div id="motionBlur" ref={motionBlurRef} />
       <div
         className={`cursor-light-mask ${showCenterModal ? 'cursor-light-mask--focused' : ''}`}
@@ -1212,14 +1714,6 @@ function App() {
         <>
           <div className="painting-modal-backdrop" aria-hidden="true" onClick={() => setModalInfo(null)} />
           <section className="painting-modal" role="dialog" aria-label="Selected painting">
-            <div className="painting-modal__media">
-              {modalInfo.imageUrl ? (
-                <img src={modalInfo.imageUrl} alt={modalInfo.title || 'Selected painting'} className="painting-modal__image" />
-              ) : (
-                <div className="painting-modal__image painting-modal__image--fallback">Image unavailable</div>
-              )}
-            </div>
-
             <div className="painting-modal__content" aria-live="polite">
               <p><strong>Name:</strong> {modalInfo.title}</p>
               <p><strong>Author:</strong> {modalInfo.artist}</p>
@@ -1248,16 +1742,44 @@ function App() {
       </div>
 
       <div className="controls">
-        <button type="button" className="turnLeft" onClick={() => pressKey('q')}>
+        <button
+          type="button"
+          className="turnLeft"
+          onPointerDown={(e) => handleControlPointerDown('q', e)}
+          onMouseDown={(e) => handleControlMouseDown('q', e)}
+          onTouchStart={(e) => handleControlTouchStart('q', e)}
+          onClick={(e) => handleControlClick('q', e)}
+        >
           {'<- Turn Left'}
         </button>
-        <button type="button" className="forward" onClick={() => pressKey('w')}>
+        <button
+          type="button"
+          className="forward"
+          onPointerDown={(e) => handleControlPointerDown('w', e)}
+          onMouseDown={(e) => handleControlMouseDown('w', e)}
+          onTouchStart={(e) => handleControlTouchStart('w', e)}
+          onClick={(e) => handleControlClick('w', e)}
+        >
           {'^ Forward'}
         </button>
-        <button type="button" className="turnRight" onClick={() => pressKey('e')}>
+        <button
+          type="button"
+          className="turnRight"
+          onPointerDown={(e) => handleControlPointerDown('e', e)}
+          onMouseDown={(e) => handleControlMouseDown('e', e)}
+          onTouchStart={(e) => handleControlTouchStart('e', e)}
+          onClick={(e) => handleControlClick('e', e)}
+        >
           {'Turn Right ->'}
         </button>
-        <button type="button" className="backward" onClick={() => pressKey('s')}>
+        <button
+          type="button"
+          className="backward"
+          onPointerDown={(e) => handleControlPointerDown('s', e)}
+          onMouseDown={(e) => handleControlMouseDown('s', e)}
+          onTouchStart={(e) => handleControlTouchStart('s', e)}
+          onClick={(e) => handleControlClick('s', e)}
+        >
           {'v Backward'}
         </button>
       </div>

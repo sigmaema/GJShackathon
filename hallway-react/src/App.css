@@ -83,6 +83,25 @@ button:active {
   z-index: 10;
 }
 
+.debug-hud {
+  position: fixed;
+  left: 20px;
+  bottom: 120px;
+  margin: 0;
+  padding: 10px 12px;
+  width: min(420px, calc(100vw - 40px));
+  background: rgba(0, 0, 0, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  border-radius: 8px;
+  color: #d8ffe0;
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 12px;
+  line-height: 1.35;
+  white-space: pre-wrap;
+  pointer-events: none;
+  z-index: 10;
+}
+
 .controls-hint {
   position: fixed;
   top: 20px;
@@ -159,68 +178,57 @@ button:active {
   top: 50%;
   left: 50%;
   transform: translate(-50%, -50%);
-  width: min(700px, calc(100vw - 40px));
-  max-height: min(86vh, 740px);
-  border-radius: 14px;
+  width: min(760px, calc(100vw - 40px));
+  max-height: min(80vh, 620px);
+  border-radius: 10px;
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  background: rgba(9, 12, 18, 0.96);
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  color: #f5f7ff;
+  background: rgba(245, 236, 216, 0.98);
+  border: 8px solid rgba(54, 43, 28, 0.55);
+  color: #1c1610;
   line-height: 1.45;
-  box-shadow: 0 24px 72px rgba(0, 0, 0, 0.45);
+  box-shadow: 0 22px 56px rgba(0, 0, 0, 0.45);
   pointer-events: auto;
   z-index: 9999;
-}
-
-.painting-modal__media {
-  min-height: 320px;
-  background: #0f131c;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.painting-modal__image {
-  width: 100%;
-  height: 100%;
-  max-height: min(86vh, 740px);
-  object-fit: contain;
-  display: block;
-  background: #0f131c;
-}
-
-.painting-modal__image--fallback {
-  height: 100%;
-  color: rgba(255, 255, 255, 0.72);
-  font-size: 15px;
-  align-content: center;
-  text-align: center;
+  font-family: Georgia, 'Times New Roman', serif;
 }
 
 .painting-modal__content {
-  padding: 16px 20px 12px;
-  font-size: 14px;
+  padding: 20px 24px 10px;
+  font-size: 22px;
   overflow-y: auto;
 }
 
 .painting-modal__content p {
-  margin: 0 0 8px;
+  margin: 0 0 12px;
+}
+
+.painting-modal__content strong {
+  color: #3b3022;
 }
 
 .painting-modal__actions {
-  padding: 0 20px 18px;
+  padding: 4px 24px 18px;
   display: flex;
   justify-content: flex-end;
 }
 
 .painting-modal__close {
   width: auto;
-  min-width: 110px;
-  height: 40px;
-  border-radius: 8px;
+  min-width: 120px;
+  height: 42px;
+  border-radius: 6px;
   padding: 0 16px;
+  background: #3b3022;
+  color: #f3e8d3;
+  border: 1px solid #1c1610;
+  font-family: Georgia, 'Times New Roman', serif;
+  font-size: 16px;
+}
+
+.painting-modal__close:hover {
+  background: #2b2115;
 }
 
 @media (max-width: 900px) {
@@ -229,13 +237,7 @@ button:active {
     max-height: calc(100vh - 20px);
   }
 
-  .painting-modal__media {
-    min-height: 220px;
-    max-height: 52vh;
+  .painting-modal__content {
+    font-size: 18px;
   }
-
-  .painting-modal__image {
-    max-height: 52vh;
-  }
-
 }
