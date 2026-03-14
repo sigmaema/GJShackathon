@@ -8,21 +8,31 @@ let catalogRowsPromise = null
 
 function App() {
   const AUDIO_BASE_VOLUME = 0.5
-  const AUDIO_FADE_OUT_MS = 450
+  const AUDIO_FADE_OUT_MS = 1400
+  const AUDIO_CROSSFADE_MS = 1600
   const BACKGROUND_AUDIO_SRC = '/background_noise.mp3'
-  const BACKGROUND_AUDIO_VOLUME = 0.2
+  const BACKGROUND_AUDIO_TRIM_END_SECONDS = 3
+  const BACKGROUND_AUDIO_VOLUME = 0.12
+  const FOOTSTEPS_AUDIO_SRC = '/footsteps.mp3'
+  const FOOTSTEPS_AUDIO_VOLUME = 0.6
+  const FOOTSTEPS_PLAYBACK_RATE = 7
+  const FOOTSTEPS_FADE_MS = 180
   const getIdleDescription = (lang) => (lang === 'cs' ? 'Otocte se doleva nebo doprava a prohlednete si obraz.' : 'Turn left or right to inspect a painting.')
   const mountRef = useRef(null)
   const motionBlurRef = useRef(null)
   const cursorLightRef = useRef(null)
   const debugHudRef = useRef(null)
   const audioRef = useRef(null)
+  const audioAltRef = useRef(null)
   const backgroundAudioRef = useRef(null)
-  const audioFadeRafRef = useRef(0)
-  const audioFadeTokenRef = useRef(0)
+  const footstepsAudioRef = useRef(null)
+  const footstepsActiveRef = useRef(false)
   const audioUnlockedRef = useRef(false)
   const pendingMusicCandidatesRef = useRef([])
   const pendingMusicIndexRef = useRef(0)
+  const musicTransitionTokenRef = useRef(0)
+  const backgroundCandidatesRef = useRef([])
+  const backgroundCandidateIndexRef = useRef(0)
   const pendingActionRef = useRef(null)
   const heldKeysRef = useRef({})
   const uiCardLogRef = useRef({ visible: false, key: '' })
@@ -42,6 +52,8 @@ function App() {
     description: getIdleDescription('en'),
   })
   const [modalInfo, setModalInfo] = useState(null)
+  const [isGalleryLoading, setIsGalleryLoading] = useState(true)
+  
 
   const isCzech = language === 'cs'
   const uiText = {
@@ -67,91 +79,358 @@ function App() {
     selectedPainting: isCzech ? 'Vybraný obraz' : 'Selected painting',
     languageButton: isCzech ? 'Jazyk: CZ' : 'Language: EN',
   }
-
+  const seenPaintingsRef = useRef(new Set(JSON.parse(localStorage.getItem('seenPaintings') || '[]')))
+  const [seenCount, setSeenCount] = useState(seenPaintingsRef.current.size)
+  const [totalPaintings, setTotalPaintings] = useState(0)
+  const [achievementToast, setAchievementToast] = useState(null)
+  const seenTimerRef = useRef(null)
+  const unlockedAchievementsRef = useRef(new Set(JSON.parse(localStorage.getItem('unlockedAchievements') || '[]')))
+  const checkAchievementsRef = useRef(null)
+  const ACHIEVEMENTS = [
+  { id: 'first_look', label: '🏛️ First look', description: 'Viewed your first painting', check: (seen) => seen.size >= 1 },
+  { id: 'five_paintings', label: '👁️ Getting curious', description: 'Viewed 5 paintings', check: (seen) => seen.size >= 5 },
+  { id: 'halfway', label: '🎨 Halfway there', description: 'Viewed half the gallery', check: (seen, total) => total > 0 && seen.size >= Math.floor(total / 2) },
+  { id: 'full_tour', label: '🏆 Full tour', description: 'Viewed every painting', check: (seen, total) => total > 0 && seen.size >= total },
+  { id: 'ancient', label: '🏺 Ancient eye', description: 'Viewed a painting from before 1500', check: (seen, total, seenData) => [...seenData.values()].some(p => Number(p.year) < 1500) },
+  { id: 'modern', label: '🖼️ Modern taste', description: 'Viewed a painting from after 1900', check: (seen, total, seenData) => [...seenData.values()].some(p => Number(p.year) > 1900) },
+  { id: 'renaissance', label: '✨ Renaissance collector', description: 'Viewed a painting from 1400–1600', check: (seen, total, seenData) => [...seenData.values()].some(p => Number(p.year) >= 1400 && Number(p.year) <= 1600) },
+  { id: 'baroque', label: '🕯️ Baroque soul', description: 'Viewed a painting from 1600–1750', check: (seen, total, seenData) => [...seenData.values()].some(p => Number(p.year) >= 1600 && Number(p.year) <= 1750) },
+  { id: 'mirror', label: '🪞 Who are you..?', description: 'Reached the end of the hallway', check: (seen, total, seenData, playerZ) => playerZ <= -46 },
+]
+const paintingCatalogRef = useRef([])
+const seenPaintingsDataRef = useRef(new Map())
+const checkAchievements = (seenSet, seenDataMap, playerZ = 0) => {
+  ACHIEVEMENTS.forEach(achievement => {
+    if (unlockedAchievementsRef.current.has(achievement.id)) return
+    if (achievement.check(seenSet, totalPaintings, seenDataMap, playerZ)) {
+      unlockedAchievementsRef.current.add(achievement.id)
+      localStorage.setItem('unlockedAchievements', JSON.stringify([...unlockedAchievementsRef.current]))
+      setAchievementToast(achievement.label)
+      setTimeout(() => setAchievementToast(null), 3000)
+    }
+  })
+}
+checkAchievementsRef.current = checkAchievements
   useEffect(() => {
     languageRef.current = language
   }, [language])
 
-  function cancelAudioFade() {
-    if (audioFadeRafRef.current) {
-      cancelAnimationFrame(audioFadeRafRef.current)
-      audioFadeRafRef.current = 0
-    }
-    audioFadeTokenRef.current += 1
-  }
-
-  function fadeOutAndStopAudio(audio) {
-    if (!audio || !audio.src) {
+  function cancelAudioFade(audio) {
+    if (!audio) {
       return
     }
 
-    cancelAudioFade()
-    const startVolume = typeof audio.volume === 'number' ? audio.volume : AUDIO_BASE_VOLUME
-    const fadeToken = audioFadeTokenRef.current
-    const startTime = performance.now()
+    if (audio.__fadeRafId) {
+      cancelAnimationFrame(audio.__fadeRafId)
+      audio.__fadeRafId = 0
+    }
+    audio.__fadeToken = (audio.__fadeToken || 0) + 1
+  }
 
-    const tick = (now) => {
-      if (fadeToken !== audioFadeTokenRef.current) {
-        return
+  function fadeAudioVolume(audio, targetVolume, durationMs, { stopWhenSilent = false, clearSrc = false, resetVolume = null, onDone = null } = {}) {
+    if (!audio || !audio.src) {
+      if (typeof onDone === 'function') {
+        onDone()
       }
-
-      const t = Math.min(1, (now - startTime) / AUDIO_FADE_OUT_MS)
-      audio.volume = Math.max(0, startVolume * (1 - t))
-
-      if (t < 1) {
-        audioFadeRafRef.current = requestAnimationFrame(tick)
-        return
-      }
-
-      audio.pause()
-      audio.removeAttribute('src')
-      audio.load()
-      audio.volume = AUDIO_BASE_VOLUME
-      audioFadeRafRef.current = 0
-      console.log('[audio] faded out and stopped')
+      return
     }
 
-    audioFadeRafRef.current = requestAnimationFrame(tick)
+    cancelAudioFade(audio)
+    const startVolume = typeof audio.volume === 'number' ? audio.volume : 0
+    const fadeToken = (audio.__fadeToken || 0)
+    const startTime = performance.now()
+    const safeDuration = Math.max(1, durationMs)
+
+    const tick = (now) => {
+      if (fadeToken !== (audio.__fadeToken || 0)) {
+        return
+      }
+
+      const t = Math.min(1, (now - startTime) / safeDuration)
+      const easedT = t * t * (3 - (2 * t))
+      audio.volume = Math.max(0, startVolume + ((targetVolume - startVolume) * easedT))
+
+      if (t < 1) {
+        audio.__fadeRafId = requestAnimationFrame(tick)
+        return
+      }
+
+      audio.__fadeRafId = 0
+
+      if (stopWhenSilent && targetVolume <= 0.001) {
+        audio.pause()
+        if (clearSrc) {
+          audio.removeAttribute('src')
+          audio.load()
+        }
+      }
+
+      if (typeof resetVolume === 'number') {
+        audio.volume = resetVolume
+      }
+
+      if (typeof onDone === 'function') {
+        onDone()
+      }
+    }
+
+    audio.__fadeRafId = requestAnimationFrame(tick)
+  }
+
+  function fadeOutAndStopAudio(audio, durationMs, { clearSrc = true, resetVolume = AUDIO_BASE_VOLUME, onDone = null } = {}) {
+    if (!audio || !audio.src) {
+      if (typeof onDone === 'function') {
+        onDone()
+      }
+      return
+    }
+
+    fadeAudioVolume(audio, 0, durationMs, {
+      stopWhenSilent: true,
+      clearSrc,
+      resetVolume,
+      onDone,
+    })
+  }
+  useEffect(() => {
+  if (!paintingInfo.hasSelection || !paintingInfo.selectionKey) {
+    if (seenTimerRef.current) {
+      clearTimeout(seenTimerRef.current)
+      seenTimerRef.current = null
+    }
+    return
+  }
+
+  const key = paintingInfo.selectionKey
+  if (seenPaintingsRef.current.has(key)) return
+
+  seenTimerRef.current = setTimeout(() => {
+    seenPaintingsRef.current.add(key)
+    seenPaintingsDataRef.current.set(key, {
+      year: paintingInfo.year,
+      style: paintingInfo.style,
+      title: paintingInfo.title,
+    })
+    localStorage.setItem('seenPaintings', JSON.stringify([...seenPaintingsRef.current]))
+    setSeenCount(seenPaintingsRef.current.size)
+    checkAchievements(seenPaintingsRef.current, seenPaintingsDataRef.current)
+  }, 2000)
+
+  return () => {
+    if (seenTimerRef.current) {
+      clearTimeout(seenTimerRef.current)
+      seenTimerRef.current = null
+    }
+  }
+}, [paintingInfo.selectionKey])
+  function ensurePaintingAudios() {
+    if (!audioRef.current) {
+      const primaryAudio = new Audio()
+      primaryAudio.loop = true
+      primaryAudio.volume = AUDIO_BASE_VOLUME
+      primaryAudio.preload = 'auto'
+      primaryAudio.muted = isMutedRef.current;
+      audioRef.current = primaryAudio
+    }
+
+    if (!audioAltRef.current) {
+      const secondaryAudio = new Audio()
+      secondaryAudio.loop = true
+      secondaryAudio.volume = AUDIO_BASE_VOLUME
+      secondaryAudio.preload = 'auto'
+      secondaryAudio.muted = isMutedRef.current;
+      audioAltRef.current = secondaryAudio
+    }
+  }
+
+  function ensureFootstepsAudio() {
+    if (!footstepsAudioRef.current) {
+      const footsteps = new Audio()
+      footsteps.loop = true
+      footsteps.volume = FOOTSTEPS_AUDIO_VOLUME
+      footsteps.playbackRate = FOOTSTEPS_PLAYBACK_RATE
+      footsteps.preload = 'auto'
+      footsteps.src = new URL(FOOTSTEPS_AUDIO_SRC, window.location.origin).href
+      footsteps.muted = isMutedRef.current;
+      footstepsAudioRef.current = footsteps
+    }
+
+    footstepsAudioRef.current.playbackRate = FOOTSTEPS_PLAYBACK_RATE
+    footstepsAudioRef.current.volume = FOOTSTEPS_AUDIO_VOLUME
+    return footstepsAudioRef.current
+  }
+
+  function startFootsteps() {
+    const footsteps = ensureFootstepsAudio()
+    if (!footsteps.paused) {
+      return
+    }
+
+    footsteps.volume = 0
+    footsteps.play().then(() => {
+      fadeAudioVolume(footsteps, FOOTSTEPS_AUDIO_VOLUME, FOOTSTEPS_FADE_MS)
+    }).catch((err) => {
+      if (err?.name === 'NotAllowedError') {
+        return
+      }
+      console.log('[audio:footsteps] playback failed', err)
+    })
+  }
+
+  function stopFootsteps() {
+    const footsteps = footstepsAudioRef.current
+    if (!footsteps || footsteps.paused) {
+      return
+    }
+
+    fadeOutAndStopAudio(footsteps, FOOTSTEPS_FADE_MS, {
+      clearSrc: false,
+      resetVolume: FOOTSTEPS_AUDIO_VOLUME,
+    })
+  }
+
+  function crossfadeToPaintingTrack(candidate, selectionKey, candidateIndex, transitionToken, onReady) {
+    ensurePaintingAudios()
+
+    if (transitionToken !== musicTransitionTokenRef.current) {
+      return Promise.resolve(false)
+    }
+
+    const activeAudio = audioRef.current
+    const nextAudio = audioAltRef.current
+    const resolvedTarget = new URL(candidate, window.location.href).href
+    const activeResolved = activeAudio?.src ? new URL(activeAudio.src, window.location.href).href : ''
+
+    if (activeAudio && activeResolved === resolvedTarget && !activeAudio.paused) {
+      cancelAudioFade(activeAudio)
+      fadeAudioVolume(activeAudio, AUDIO_BASE_VOLUME, AUDIO_CROSSFADE_MS)
+      pauseBackgroundNoise(true)
+      if (typeof onReady === 'function') {
+        onReady()
+      }
+      return Promise.resolve(true)
+    }
+
+    nextAudio.src = candidate
+    nextAudio.currentTime = 0
+    nextAudio.volume = 0
+
+    if (nextAudio.__playPending) {
+  return Promise.resolve(false)
+}
+if (nextAudio.__playPending) {
+  return Promise.resolve(false)
+}
+nextAudio.__playPending = true
+return nextAudio.play().then(() => {
+  nextAudio.__playPending = false
+  if (transitionToken !== musicTransitionTokenRef.current) {
+    nextAudio.pause()
+    nextAudio.removeAttribute('src')
+    nextAudio.load()
+    nextAudio.volume = AUDIO_BASE_VOLUME
+    return false
+  }
+
+  audioUnlockedRef.current = true
+  pauseBackgroundNoise(true)
+  fadeAudioVolume(nextAudio, AUDIO_BASE_VOLUME, AUDIO_CROSSFADE_MS)
+
+  if (activeAudio && activeAudio.src && !activeAudio.paused) {
+    fadeOutAndStopAudio(activeAudio, AUDIO_FADE_OUT_MS, { clearSrc: true, resetVolume: AUDIO_BASE_VOLUME })
+  }
+
+  audioRef.current = nextAudio
+  audioAltRef.current = activeAudio
+
+  if (typeof onReady === 'function') {
+    onReady()
+  }
+
+  console.log('[audio] crossfade completed', {
+    selectionKey,
+    candidateIndex,
+    src: resolvedTarget,
+  })
+  return true
+}).catch((err) => {
+  nextAudio.__playPending = false
+  throw err
+})
   }
 
   function ensureBackgroundAudio() {
     if (!backgroundAudioRef.current) {
       const bgAudio = new Audio()
-      bgAudio.loop = true
+      bgAudio.loop = false
       bgAudio.volume = BACKGROUND_AUDIO_VOLUME
       bgAudio.preload = 'auto'
-      bgAudio.src = new URL(BACKGROUND_AUDIO_SRC, window.location.origin).href
+      bgAudio.muted = isMutedRef.current;
       backgroundAudioRef.current = bgAudio
+
+      backgroundCandidatesRef.current = buildBackgroundCandidates()
+      backgroundCandidateIndexRef.current = 0
+      setBackgroundAudioCandidate(0)
+
+      bgAudio.addEventListener('error', () => {
+        console.log('[audio:bg] source load error', {
+          candidateIndex: backgroundCandidateIndexRef.current,
+          src: bgAudio.src,
+        })
+        advanceBackgroundAudioCandidate()
+      })
+
+      // Trim the final tail of the ambient track by seeking back before the end.
+      bgAudio.addEventListener('timeupdate', () => {
+        const duration = bgAudio.duration
+        if (!Number.isFinite(duration) || duration <= BACKGROUND_AUDIO_TRIM_END_SECONDS + 0.2) {
+          return
+        }
+
+        const loopEnd = duration - BACKGROUND_AUDIO_TRIM_END_SECONDS
+        if (bgAudio.currentTime >= loopEnd) {
+          bgAudio.currentTime = 0
+        }
+      })
     }
     return backgroundAudioRef.current
   }
+  
 
-  function pauseBackgroundNoise() {
+  function pauseBackgroundNoise(withFade = false) {
     const bgAudio = backgroundAudioRef.current
     if (!bgAudio) {
       return
     }
 
     if (!bgAudio.paused) {
-      bgAudio.pause()
+      if (withFade) {
+        // Explicit ambience fade-out when painting audio takes over.
+        fadeOutAndStopAudio(bgAudio, AUDIO_FADE_OUT_MS, {
+          clearSrc: false,
+          resetVolume: BACKGROUND_AUDIO_VOLUME,
+        })
+      } else {
+        bgAudio.pause()
+      }
       console.log('[audio:bg] paused for painting track')
     }
   }
 
-  function playBackgroundNoise(reason) {
+  function playBackgroundNoise(reason, withFade = false, force = false) {
     const paintingAudio = audioRef.current
-    if (paintingAudio && paintingAudio.src && !paintingAudio.paused) {
+    if (!force && paintingAudio && paintingAudio.src && !paintingAudio.paused) {
       return
     }
 
     const bgAudio = ensureBackgroundAudio()
-    bgAudio.volume = BACKGROUND_AUDIO_VOLUME
 
-    if (!bgAudio.paused) {
-      return
-    }
-
-    bgAudio.play().then(() => {
+    const startPlayback = () => bgAudio.play().then(() => {
+      if (withFade) {
+        fadeAudioVolume(bgAudio, BACKGROUND_AUDIO_VOLUME, AUDIO_CROSSFADE_MS)
+      } else {
+        bgAudio.volume = BACKGROUND_AUDIO_VOLUME
+      }
       console.log('[audio:bg] playback started', { reason })
     }).catch((err) => {
       if (err?.name === 'NotAllowedError') {
@@ -159,9 +438,46 @@ function App() {
         return
       }
       console.log('[audio:bg] playback failed', err)
+      if (advanceBackgroundAudioCandidate()) {
+        startPlayback()
+      }
     })
-  }
 
+    if (!bgAudio.paused) {
+      if (withFade) {
+        fadeAudioVolume(bgAudio, BACKGROUND_AUDIO_VOLUME, AUDIO_CROSSFADE_MS)
+      } else {
+        bgAudio.volume = BACKGROUND_AUDIO_VOLUME
+      }
+      return
+    }
+
+    bgAudio.volume = withFade ? 0 : BACKGROUND_AUDIO_VOLUME
+    startPlayback()
+  }
+const isMutedRef = useRef(false)
+const [isMuted, setIsMuted] = useState(false)
+
+const toggleMute = () => {
+  setIsMuted(prev => {
+    const next = !prev
+    isMutedRef.current = next
+    const audios = [
+      audioRef.current,
+      audioAltRef.current,
+      backgroundAudioRef.current,
+      footstepsAudioRef.current,
+    ]
+    audios.forEach(a => { if (a) a.muted = next })
+    if (!next && audioUnlockedRef.current) {
+      const hasActivePainting = audioRef.current?.src && !audioRef.current?.paused
+      if (!hasActivePainting) {
+        playBackgroundNoise('unmute', true, true)
+      }
+    }
+    return next
+  })
+}
   const mapKeyToAction = (key) => {
     const normalizedKey = String(key).toLowerCase()
     const actionMap = {
@@ -232,6 +548,54 @@ function App() {
     return candidates
   }
 
+  const buildBackgroundCandidates = () => {
+    const candidates = []
+    const addCandidate = (url) => {
+      if (!url || candidates.includes(url)) {
+        return
+      }
+      candidates.push(url)
+    }
+
+    const baseUrl = String(import.meta.env.BASE_URL || '/').replace(/\\/g, '/')
+    const normalizedBase = baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`
+
+    const backgroundFileName = String(BACKGROUND_AUDIO_SRC).replace(/^\/+/, '')
+    addCandidate(new URL(backgroundFileName, window.location.href).href)
+    addCandidate(new URL(`${normalizedBase}${backgroundFileName}`, window.location.origin).href)
+    addCandidate(new URL(BACKGROUND_AUDIO_SRC, window.location.origin).href)
+
+    return candidates
+  }
+
+  const setBackgroundAudioCandidate = (index) => {
+    const bgAudio = backgroundAudioRef.current
+    const candidate = backgroundCandidatesRef.current[index]
+    if (!bgAudio || !candidate) {
+      return false
+    }
+
+    const resolved = new URL(candidate, window.location.href).href
+    if (bgAudio.src !== resolved) {
+      bgAudio.src = candidate
+      bgAudio.load()
+    }
+    backgroundCandidateIndexRef.current = index
+    console.log('[audio:bg] source candidate selected', { index, candidate })
+    return true
+  }
+
+  const advanceBackgroundAudioCandidate = () => {
+    const nextIndex = backgroundCandidateIndexRef.current + 1
+    if (nextIndex >= backgroundCandidatesRef.current.length) {
+      console.log('[audio:bg] exhausted source candidates', {
+        candidates: backgroundCandidatesRef.current,
+      })
+      return false
+    }
+    return setBackgroundAudioCandidate(nextIndex)
+  }
+
   useEffect(() => {
     paintingInfoRef.current = paintingInfo
   }, [paintingInfo])
@@ -259,28 +623,15 @@ function App() {
     const action = mapKeyToAction(key)
     enqueueAction(action, 'button:pointerdown')
   }
-
-  const handleControlMouseDown = (key, e) => {
-    e.preventDefault()
-    e.stopPropagation()
-    const action = mapKeyToAction(key)
-    enqueueAction(action, 'button:mousedown')
+  function normalizeMusicUrlForComparison(url) {
+  if (!url) return ''
+  try {
+    const u = new URL(url)
+    return u.pathname  // strips the token query param
+  } catch {
+    return url
   }
-
-  const handleControlTouchStart = (key, e) => {
-    e.preventDefault()
-    e.stopPropagation()
-    const action = mapKeyToAction(key)
-    enqueueAction(action, 'button:touchstart')
-  }
-
-  const handleControlClick = (key, e) => {
-    e.preventDefault()
-    e.stopPropagation()
-    const action = mapKeyToAction(key)
-    enqueueAction(action, 'button:click')
-  }
-
+}
   useEffect(() => {
     const prev = uiCardLogRef.current
     if (paintingInfo.hasSelection) {
@@ -348,57 +699,56 @@ function App() {
   }, [])
 
   useEffect(() => {
-    if (!audioRef.current) {
-      const audio = new Audio()
-      audio.loop = true
-      audio.volume = AUDIO_BASE_VOLUME
-      audio.preload = 'auto'
-      audioRef.current = audio
-    }
-
+    ensurePaintingAudios()
     ensureBackgroundAudio()
+    const transitionToken = musicTransitionTokenRef.current + 1
+    musicTransitionTokenRef.current = transitionToken
 
-    const audio = audioRef.current
-    const targetMusic = paintingInfo.hasSelection ? paintingInfo.musicUrl : ''
+    const targetMusic = (paintingInfo.musicUrl || '').trim()
+    const activeAudio = audioRef.current
+    const standbyAudio = audioAltRef.current
+    let disposed = false
 
     if (!targetMusic) {
-      pendingMusicCandidatesRef.current = []
-      pendingMusicIndexRef.current = 0
-      const shouldWaitForFade = audio && audio.src && !audio.paused
-      fadeOutAndStopAudio(audio)
-      if (shouldWaitForFade) {
-        window.setTimeout(() => playBackgroundNoise('painting-ended'), AUDIO_FADE_OUT_MS + 20)
-      } else {
-        playBackgroundNoise('no-painting-selected')
-      }
-      return
-    }
-
-    cancelAudioFade()
-    audio.volume = AUDIO_BASE_VOLUME
-
+  // Stop both painting tracks immediately
+  const audios = [activeAudio, standbyAudio]
+  audios.forEach(a => {
+    if (!a) return
+    cancelAudioFade(a)
+    a.pause()
+    a.removeAttribute('src')
+    a.load()
+    a.volume = AUDIO_BASE_VOLUME
+  })
+  pendingMusicCandidatesRef.current = []
+  pendingMusicIndexRef.current = 0
+  playBackgroundNoise('left-painting', true, true)
+  return
+}
     const candidates = buildMusicCandidates(targetMusic)
+console.log('[audio] musicUrl changed', targetMusic, candidates) // move it here
     if (candidates.length === 0) {
       console.log('[audio] no valid music candidates for selection', {
         selectionKey: paintingInfo.selectionKey,
         rawMusic: targetMusic,
       })
+      playBackgroundNoise('no-valid-painting-candidates', true)
       return
     }
-
     pendingMusicCandidatesRef.current = candidates
     pendingMusicIndexRef.current = 0
 
     const applyCandidate = (index) => {
-      const candidate = candidates[index]
-      if (!candidate) {
+      if (transitionToken !== musicTransitionTokenRef.current) {
+        return false
+      }
+      if (candidates !== pendingMusicCandidatesRef.current) {
         return false
       }
 
-      const resolvedTarget = new URL(candidate, window.location.href).href
-      if (audio.src !== resolvedTarget) {
-        audio.src = candidate
-        audio.currentTime = 0
+      const candidate = candidates[index]
+      if (!candidate) {
+        return false
       }
 
       console.log('[audio] candidate selected', {
@@ -406,6 +756,31 @@ function App() {
         candidateIndex: index,
         candidate,
       })
+
+      crossfadeToPaintingTrack(candidate, paintingInfo.selectionKey, index, transitionToken, () => {
+        if (disposed) {
+          return
+        }
+        console.log('[audio] playback started', {
+          selectionKey: paintingInfo.selectionKey,
+          candidateIndex: index,
+          src: candidate,
+        })
+      }).catch((err) => {
+        if (disposed) {
+          return
+        }
+
+        if (err?.name === 'NotAllowedError') {
+          console.log('[audio] autoplay blocked, waiting for user gesture', err)
+          playBackgroundNoise('painting-autoplay-blocked', true)
+          return
+        }
+
+        console.log('[audio] candidate play failed', err)
+        advanceCandidate()
+      })
+
       return true
     }
 
@@ -420,77 +795,64 @@ function App() {
       }
 
       pendingMusicIndexRef.current = nextIndex
-      if (applyCandidate(nextIndex)) {
-        audio.play().then(() => {
-          audioUnlockedRef.current = true
-          pauseBackgroundNoise()
-          console.log('[audio] playback started on fallback candidate', {
-            selectionKey: paintingInfo.selectionKey,
-            candidateIndex: nextIndex,
-          })
-        }).catch((err) => {
-          if (err?.name === 'NotAllowedError') {
-            console.log('[audio] autoplay blocked on fallback candidate', err)
-            return
-          }
-          console.log('[audio] fallback candidate play failed', err)
-          advanceCandidate()
-        })
-      }
+      applyCandidate(nextIndex)
     }
-
-    const onAudioError = () => {
-      console.log('[audio] load error for candidate', {
-        selectionKey: paintingInfo.selectionKey,
-        candidateIndex: pendingMusicIndexRef.current,
-        src: audio.src,
-      })
-      advanceCandidate()
-    }
-
-    audio.addEventListener('error', onAudioError)
 
     if (!applyCandidate(0)) {
-      audio.removeEventListener('error', onAudioError)
       return
     }
 
-    audio.play().then(() => {
-      audioUnlockedRef.current = true
-      pauseBackgroundNoise()
-      console.log('[audio] playback started', {
-        selectionKey: paintingInfo.selectionKey,
-        src: audio.src,
-      })
-    }).catch((err) => {
-      if (err?.name === 'NotAllowedError') {
-        console.log('[audio] autoplay blocked, waiting for user gesture', err)
-        return
-      }
-      console.log('[audio] initial candidate play failed', err)
-      advanceCandidate()
-    })
-
     return () => {
-      audio.removeEventListener('error', onAudioError)
+      disposed = true
+      // Invalidate any in-flight async play from this effect run.
+      if (musicTransitionTokenRef.current === transitionToken) {
+        musicTransitionTokenRef.current += 1
+      }
     }
-  }, [paintingInfo.hasSelection, paintingInfo.musicUrl, paintingInfo.selectionKey])
+  }, [paintingInfo.musicUrl])
 
   useEffect(() => {
     const unlockAudio = () => {
       audioUnlockedRef.current = true
+      const currentTargetMusic = (paintingInfoRef.current?.musicUrl || '').trim()
+
+      // In hallway mode, never resume stale painting tracks.
+      if (!currentTargetMusic) {
+        const activePaintingAudio = audioRef.current
+        const standbyPaintingAudio = audioAltRef.current
+
+        if (activePaintingAudio && activePaintingAudio.src) {
+          cancelAudioFade(activePaintingAudio)
+          activePaintingAudio.pause()
+          activePaintingAudio.removeAttribute('src')
+          activePaintingAudio.load()
+          activePaintingAudio.volume = AUDIO_BASE_VOLUME
+        }
+
+        if (standbyPaintingAudio && standbyPaintingAudio.src) {
+          cancelAudioFade(standbyPaintingAudio)
+          standbyPaintingAudio.pause()
+          standbyPaintingAudio.removeAttribute('src')
+          standbyPaintingAudio.load()
+          standbyPaintingAudio.volume = AUDIO_BASE_VOLUME
+        }
+
+        playBackgroundNoise('unlock-gesture-hallway', true, true)
+        return
+      }
+
       const audio = audioRef.current
-      if (!audio || !audio.paused || !audio.src) {
-        playBackgroundNoise('unlock-gesture')
+      if (!audio || !audio.src || !audio.paused) {
         return
       }
 
       audio.play().then(() => {
-        pauseBackgroundNoise()
+        fadeAudioVolume(audio, AUDIO_BASE_VOLUME, AUDIO_CROSSFADE_MS)
+        pauseBackgroundNoise(true)
         console.log('[audio] playback resumed after user gesture', { src: audio.src })
       }).catch((err) => {
         console.log('[audio] user gesture play failed', err)
-        playBackgroundNoise('unlock-fallback')
+        playBackgroundNoise('unlock-fallback', true, true)
       })
     }
 
@@ -506,13 +868,25 @@ function App() {
   }, [])
 
   useEffect(() => () => {
-    cancelAudioFade()
+    cancelAudioFade(audioRef.current)
+    cancelAudioFade(audioAltRef.current)
+    cancelAudioFade(backgroundAudioRef.current)
+    cancelAudioFade(footstepsAudioRef.current)
+
     if (audioRef.current) {
       audioRef.current.pause()
       audioRef.current.removeAttribute('src')
       audioRef.current.load()
       audioRef.current.volume = AUDIO_BASE_VOLUME
       audioRef.current = null
+    }
+
+    if (audioAltRef.current) {
+      audioAltRef.current.pause()
+      audioAltRef.current.removeAttribute('src')
+      audioAltRef.current.load()
+      audioAltRef.current.volume = AUDIO_BASE_VOLUME
+      audioAltRef.current = null
     }
 
     if (backgroundAudioRef.current) {
@@ -522,6 +896,14 @@ function App() {
       backgroundAudioRef.current.volume = BACKGROUND_AUDIO_VOLUME
       backgroundAudioRef.current = null
     }
+
+    if (footstepsAudioRef.current) {
+      footstepsAudioRef.current.pause()
+      footstepsAudioRef.current.removeAttribute('src')
+      footstepsAudioRef.current.load()
+      footstepsAudioRef.current.volume = FOOTSTEPS_AUDIO_VOLUME
+      footstepsAudioRef.current = null
+    }
   }, [])
 
   useEffect(() => {
@@ -529,8 +911,8 @@ function App() {
 
     // Scene setup
     const scene = new THREE.Scene()
-    scene.background = new THREE.Color(0x3a3a3a)
-    scene.fog = new THREE.Fog(0x3a3a3a, 50, 210)
+    scene.background = new THREE.Color(0x4a4a4a)
+    scene.fog = new THREE.Fog(0x4a4a4a, 50, 220)
 
     const BASE_VERTICAL_FOV = 75
     const BASE_ASPECT = 16 / 9
@@ -575,6 +957,7 @@ function App() {
 
     const stepAnimation = {
       active: false,
+      action: '',
       startTime: 0,
       durationMs: 800,
       fromPosition: new THREE.Vector3(),
@@ -591,16 +974,46 @@ function App() {
       blurUntil = Math.max(blurUntil, performance.now() + durationMs)
     }
 
+    function isFacingPaintingWall(direction) {
+      return Math.abs(Math.sin(direction)) > 0.7
+    }
+
     function moveForward() {
+      if (isFacingPaintingWall(player.direction)) {
+        return false
+      }
+
       const moveDistance = player.moveDistance
-      player.position.z -= moveDistance * Math.cos(player.direction)
-      player.position.x -= moveDistance * Math.sin(player.direction)
+      const nextX = player.position.x - moveDistance * Math.sin(player.direction)
+      const nextZ = player.position.z - moveDistance * Math.cos(player.direction)
+      if (nextX < MIN_PLAYER_X || nextX > MAX_PLAYER_X) {
+        return false
+      }
+      if (nextZ > MAX_PLAYER_Z) {
+        return false
+      }
+      player.position.z = nextZ
+      player.position.x = nextX
+      return true
     }
 
     function moveBackward() {
+      if (isFacingPaintingWall(player.direction)) {
+        return false
+      }
+
       const moveDistance = player.moveDistance
-      player.position.z += moveDistance * Math.cos(player.direction)
-      player.position.x += moveDistance * Math.sin(player.direction)
+      const nextX = player.position.x + moveDistance * Math.sin(player.direction)
+      const nextZ = player.position.z + moveDistance * Math.cos(player.direction)
+      if (nextX < MIN_PLAYER_X || nextX > MAX_PLAYER_X) {
+        return false
+      }
+      if (nextZ > MAX_PLAYER_Z) {
+        return false
+      }
+      player.position.z = nextZ
+      player.position.x = nextX
+      return true
     }
 
     function turnLeft() {
@@ -620,7 +1033,7 @@ function App() {
 
     function startStep(action) {
       if (stepAnimation.active) {
-        return
+        return false
       }
 
       console.log('[movement] startStep', {
@@ -641,13 +1054,25 @@ function App() {
         stepAnimation.durationMs = TURN_DURATION_MS
       }
 
-      if (action === 'forward') moveForward()
-      if (action === 'backward') moveBackward()
+      let canMove = true
+      if (action === 'forward') canMove = moveForward()
+      if (action === 'backward') canMove = moveBackward()
       if (action === 'turnLeft') turnLeft()
       if (action === 'turnRight') turnRight()
 
+      if (!canMove) {
+        console.log('[movement] blocked-by-wall', {
+          action,
+          x: Number(player.position.x.toFixed(2)),
+          minX: Number(MIN_PLAYER_X.toFixed(2)),
+          maxX: Number(MAX_PLAYER_X.toFixed(2)),
+        })
+        return false
+      }
+
       stepAnimation.toPosition.copy(player.position)
       stepAnimation.toDirection = player.direction
+      stepAnimation.action = action
       stepAnimation.startTime = performance.now()
       stepAnimation.active = true
       triggerMotionBlur(stepAnimation.durationMs + 40)
@@ -660,6 +1085,8 @@ function App() {
           dir: Number(stepAnimation.toDirection.toFixed(3)),
         },
       })
+
+      return true
     }
 
     function easeInOut(t) {
@@ -674,9 +1101,14 @@ function App() {
     const PAIR_GAP = 1.1
     const SIDE_LEFT_X = -2.4
     const SIDE_RIGHT_X = 2.4
+    const PLAYER_WALL_PADDING = 0.32
+    const MIN_PLAYER_X = SIDE_LEFT_X + PLAYER_WALL_PADDING
+    const MAX_PLAYER_X = SIDE_RIGHT_X - PLAYER_WALL_PADDING
     const FALLBACK_MAX_Z_DISTANCE = 9.5
     const SIDE_LOOKAHEAD_FACTOR = 0.2
     const SPAWN_Z = 1
+    const MAX_PLAYER_Z = 3
+    const END_WALL_Z = -50
     const MAX_ARTWORK_COUNT = 30
 
     const fallbackCatalog = [
@@ -692,6 +1124,8 @@ function App() {
     let catalogCursor = 0
     let hasMoreCatalogPaintings = true
     const pairSequence = []
+    let galleryReady = false
+    let effectActive = true
     let galleryStepIndex = 0
     let rafId = 0
     let lastLoggedSelectionKey = ''
@@ -761,6 +1195,7 @@ function App() {
     }
 
     async function loadPaintingCatalog() {
+      
       if (catalogRowsCache) {
         paintingCatalog = catalogRowsCache
         console.log('[supabase] using cached catalog', { count: paintingCatalog.length })
@@ -885,6 +1320,7 @@ function App() {
       } finally {
         catalogRowsPromise = null
       }
+      paintingCatalogRef.current = paintingCatalog
     }
 
     function nextCatalogPainting() {
@@ -906,6 +1342,11 @@ function App() {
     }
 
     function getDisplayPairIndex() {
+      // Entry rule: at the front boundary, always show paintings 1/2.
+      if (view.position.z >= MAX_PLAYER_Z - 0.01) {
+        return 0
+      }
+
       const maxIndex = Math.max(0, pairSequence.length - 1)
       let displayIndex = 0
 
@@ -928,7 +1369,7 @@ function App() {
     }
 
     // Create hallway floor
-    const floorTexture = new THREE.TextureLoader().load('/floor.png')
+    const floorTexture = new THREE.TextureLoader().load('/floor4.jpg')
     floorTexture.wrapS = THREE.RepeatWrapping
     floorTexture.wrapT = THREE.RepeatWrapping
     floorTexture.repeat.set(2.5, 180)
@@ -1005,6 +1446,38 @@ function App() {
     rightWall.position.z = -240
     rightWall.receiveShadow = true
     scene.add(rightWall)
+
+    const endWallGeometry = new THREE.PlaneGeometry(5, 3)
+    const endWall = new THREE.Mesh(endWallGeometry, wallMaterial)
+    endWall.position.set(0, 1.5, END_WALL_Z)
+    endWall.receiveShadow = true
+    scene.add(endWall)
+
+    // Add a new wall further than the end wall and put zrcadlo.png on it
+    const mirrorWallZ = END_WALL_Z - 3; // Place it 3 units further (adjust as needed)
+    // Add the wall itself (same as end wall)
+    const mirrorWallGeometry = new THREE.PlaneGeometry(5, 3);
+    const mirrorWall = new THREE.Mesh(mirrorWallGeometry, wallMaterial);
+    mirrorWall.position.set(0, 1.5, mirrorWallZ);
+    mirrorWall.receiveShadow = true;
+    scene.add(mirrorWall);
+
+    // Add the zrcadlo (mirror) as a smaller plane centered on the wall
+    const mirrorTexture = new THREE.TextureLoader().load('/zrcadlo.png');
+    mirrorTexture.colorSpace = THREE.SRGBColorSpace;
+    const zrcadloMaterial = new THREE.MeshStandardMaterial({
+      map: mirrorTexture,
+      color: 0xffffff,
+      roughness: 0.2,
+      metalness: 0.8,
+      transparent: true,
+    });
+    // 50% of wall size: wall is 5x3, so mirror is 2.5x1.5
+    const zrcadloGeometry = new THREE.PlaneGeometry(2.5, 1.5);
+    const zrcadloMesh = new THREE.Mesh(zrcadloGeometry, zrcadloMaterial);
+    // Place the photo at a more positive z index (e.g., -46)
+    zrcadloMesh.position.set(0, 1.5, -50); // Centered horizontally, at y=1.5, z=-46
+    scene.add(zrcadloMesh);
 
     const artworks = []
     const artworkMeshes = []
@@ -1175,7 +1648,7 @@ function App() {
 
       mesh.position.set(x, 1.5, z)
       mesh.rotation.y = rotation
-      mesh.castShadow = true
+      mesh.castShadow = false
       mesh.receiveShadow = true
 
       const labelGeometry = new THREE.PlaneGeometry(1.0, 0.56)
@@ -1270,7 +1743,7 @@ function App() {
             prev.hasSelection === nextState.hasSelection &&
             prev.selectionKey === nextState.selectionKey &&
             prev.imageUrl === nextState.imageUrl &&
-            prev.musicUrl === nextState.musicUrl &&
+            normalizeMusicUrlForComparison(prev.musicUrl) === normalizeMusicUrlForComparison(nextState.musicUrl) &&
             prev.title === nextState.title &&
             prev.artist === nextState.artist &&
             prev.year === nextState.year &&
@@ -1282,6 +1755,12 @@ function App() {
           return nextState
         })
       }
+      if (player.position.z <= -46) {
+  checkAchievements(seenPaintingsRef.current, seenPaintingsDataRef.current, player.position.z)
+}
+if (player.position.z <= -46 && checkAchievementsRef.current) {
+  checkAchievementsRef.current(seenPaintingsRef.current, seenPaintingsDataRef.current, player.position.z)
+}
 
       if (lockedSelection) {
         updateInfoState(lockedSelection)
@@ -1396,17 +1875,17 @@ function App() {
     }
 
     // Lighting
-    const ambientLight = new THREE.AmbientLight(0xffffff, 1.35)
+    const ambientLight = new THREE.AmbientLight(0xffffff, 1.75)
     scene.add(ambientLight)
 
-    const directionalLight = new THREE.DirectionalLight(0xffffff, 1.85)
+    const directionalLight = new THREE.DirectionalLight(0xffffff, 2.2)
     directionalLight.position.set(5, 10, 5)
     directionalLight.castShadow = true
     directionalLight.shadow.mapSize.width = 2048
     directionalLight.shadow.mapSize.height = 2048
     scene.add(directionalLight)
 
-    const moodSpotlight = new THREE.SpotLight(0xffeecc, 0.55)
+    const moodSpotlight = new THREE.SpotLight(0xffeecc, 0.8)
     moodSpotlight.position.set(2, 3, 2)
     moodSpotlight.angle = THREE.MathUtils.degToRad(38)
     moodSpotlight.penumbra = 0.5
@@ -1429,8 +1908,8 @@ function App() {
     })
     const garageDoor = new THREE.Mesh(garageDoorGeometry, garageDoorMaterial)
     garageDoor.position.set(0, GARAGE_DOOR_CLOSED_Y, GARAGE_DOOR_Z)
-    garageDoor.castShadow = true
-    garageDoor.receiveShadow = true
+    garageDoor.castShadow = false
+    garageDoor.receiveShadow = false
     scene.add(garageDoor)
 
     const dustParticleCount = 260
@@ -1625,7 +2104,7 @@ function App() {
       let isMoving = false
 
       // Handle keyboard/button input as animated one-step actions.
-      if (!stepAnimation.active) {
+      if (galleryReady && !stepAnimation.active) {
         let nextAction = pendingActionRef.current
         if (!nextAction) {
           const keyPriority = ['w', 'arrowup', 's', 'arrowdown', 'q', 'a', 'arrowleft', 'e', 'd', 'arrowright']
@@ -1639,14 +2118,23 @@ function App() {
         }
 
         if (nextAction) {
-          if (nextAction === 'forward') {
-            galleryStepIndex += 1
-          } else if (nextAction === 'backward') {
-            galleryStepIndex = Math.max(galleryStepIndex - 1, 0)
+          const started = startStep(nextAction)
+          if (started) {
+            const movedAlongHallway = Math.abs(stepAnimation.toPosition.z - stepAnimation.fromPosition.z) > 0.75
+            if (nextAction === 'forward') {
+              if (movedAlongHallway) {
+                galleryStepIndex += 1
+              }
+            } else if (nextAction === 'backward') {
+              if (movedAlongHallway) {
+                galleryStepIndex = Math.max(galleryStepIndex - 1, 0)
+              }
+            }
           }
-          startStep(nextAction)
           pendingActionRef.current = null
         }
+      } else if (!galleryReady) {
+        pendingActionRef.current = null
       }
 
       // Interpolate between current and next pose so movement is visible.
@@ -1664,6 +2152,7 @@ function App() {
           view.position.copy(stepAnimation.toPosition)
           view.direction = stepAnimation.toDirection
           stepAnimation.active = false
+          stepAnimation.action = ''
 
           console.log('[movement] stepComplete', {
             pairIndex: galleryStepIndex,
@@ -1682,6 +2171,15 @@ function App() {
       // Motion blur effect
       if (motionBlurRef.current) {
         motionBlurRef.current.style.opacity = isMoving || performance.now() < blurUntil ? '0.15' : '0'
+      }
+
+      const shouldPlayFootsteps = stepAnimation.active && (stepAnimation.action === 'forward' || stepAnimation.action === 'backward')
+      if (shouldPlayFootsteps && !footstepsActiveRef.current) {
+        footstepsActiveRef.current = true
+        startFootsteps()
+      } else if (!shouldPlayFootsteps && footstepsActiveRef.current) {
+        footstepsActiveRef.current = false
+        stopFootsteps()
       }
 
       const dustArray = dustSystem.geometry.attributes.position.array
@@ -1720,7 +2218,9 @@ function App() {
       // Update camera rotation based on direction
       camera.rotation.order = 'YXZ'
       camera.rotation.y = view.direction
-      updatePaintingInfo()
+      if (galleryReady) {
+        updatePaintingInfo()
+      }
 
       // Keep creating new artworks ahead to maintain endless hallway effect
       if (hasMoreCatalogPaintings && artworks.length > 0) {
@@ -1737,22 +2237,61 @@ function App() {
 
       if (debugHudRef.current) {
         const activeSelection = paintingInfoRef.current
+        const directionNorm = ((view.direction % (Math.PI * 2)) + (Math.PI * 2)) % (Math.PI * 2)
+        const directionDeg = (THREE.MathUtils.radToDeg(directionNorm) + 360) % 360
+        const directionLabel = directionDeg < 45 || directionDeg >= 315
+          ? '-Z'
+          : directionDeg < 135
+            ? '-X'
+            : directionDeg < 225
+              ? '+Z'
+              : '+X'
+        const forwardNextX = player.position.x - player.moveDistance * Math.sin(view.direction)
+        const backwardNextX = player.position.x + player.moveDistance * Math.sin(view.direction)
+        const facingPaintingWall = isFacingPaintingWall(view.direction)
+        const canGoForward = !facingPaintingWall && forwardNextX >= MIN_PLAYER_X && forwardNextX <= MAX_PLAYER_X
+        const canGoBackward = !facingPaintingWall && backwardNextX >= MIN_PLAYER_X && backwardNextX <= MAX_PLAYER_X
+
         debugHudRef.current.textContent = [
+          `loading: ${galleryReady ? 'no' : 'yes'}`,
           `pair: ${galleryStepIndex} | display: ${getDisplayPairIndex()}`,
           `player x/z: ${player.position.x.toFixed(2)} / ${player.position.z.toFixed(2)}`,
           `view x/z: ${view.position.x.toFixed(2)} / ${view.position.z.toFixed(2)}`,
           `camera x/z: ${camera.position.x.toFixed(2)} / ${camera.position.z.toFixed(2)}`,
+          `look: ${directionLabel} (${directionDeg.toFixed(0)}deg)`,
+          `facing painting wall: ${facingPaintingWall ? 'yes' : 'no'}`,
+          `can go: forward=${canGoForward ? 'yes' : 'no'} | backward=${canGoBackward ? 'yes' : 'no'}`,
+          `hallway x-bounds: ${MIN_PLAYER_X.toFixed(2)} .. ${MAX_PLAYER_X.toFixed(2)}`,
           `selection: ${activeSelection?.title || '-'} (${activeSelection?.selectionKey || '-'})`,
         ].join('\n')
       }
     }
 
+    animate()
+
     initializeGallery().then(() => {
-      animate()
-    })
+      setTotalPaintings(paintingCatalogRef.current.length)
+  galleryReady = true
+  if (effectActive) {
+    setTimeout(() => {
+      if (effectActive) setIsGalleryLoading(false)
+    }, 1000)
+  }
+}).catch((err) => {
+  galleryReady = true
+  if (effectActive) {
+    setTimeout(() => {
+      if (effectActive) setIsGalleryLoading(false)
+    }, 1000)
+  }
+  console.log('[gallery] init failed, continuing with current scene state', err)
+})
 
     return () => {
+      effectActive = false
       cancelAnimationFrame(rafId)
+      footstepsActiveRef.current = false
+      stopFootsteps()
       window.removeEventListener('keydown', onKeyDown, { capture: true })
       window.removeEventListener('keyup', onKeyUp, { capture: true })
       window.removeEventListener('resize', onResize)
@@ -1780,8 +2319,10 @@ function App() {
       ceilingMaterial.dispose()
       leftWallGeometry.dispose()
       rightWallGeometry.dispose()
+      endWallGeometry.dispose()
       if (wallMaterial.map) wallMaterial.map.dispose()
       wallMaterial.dispose()
+      scene.remove(endWall)
       garageDoorGeometry.dispose()
       garageDoorMaterial.dispose()
       scene.remove(garageDoor)
@@ -1801,15 +2342,32 @@ function App() {
 
   return (
     <>
-      <div className="info">
-        <h3>{uiText.title}</h3>
-        <p>{uiText.intro}</p>
-        <button type="button" className="language-toggle" onClick={() => setLanguage((prev) => (prev === 'cs' ? 'en' : 'cs'))}>
-          {uiText.languageButton}
-        </button>
-      </div>
+      {isGalleryLoading ? (
+  <div className="startup-loading-cover">
+    <span className="startup-loading-text">stolen art museum</span>
+  </div>
+) : null}
 
-      <pre className="debug-hud" ref={debugHudRef} aria-live="polite" />
+
+      <button type="button" className="language-toggle" onClick={() => setLanguage((prev) => (prev === 'cs' ? 'en' : 'cs'))}>
+        {uiText.languageButton}
+      </button>
+      <button type="button" className="mute-toggle" onClick={toggleMute} aria-label={isMuted ? 'Unmute' : 'Mute'}>
+        {isMuted ? '🔇' : '🔊'}
+      </button>
+      {!isGalleryLoading && (
+  <div className="seen-counter">
+    {seenCount} / {totalPaintings}
+  </div>
+)}
+
+{achievementToast && (
+  <div className="achievement-toast">
+    {achievementToast}
+  </div>
+)}
+
+      {/* Debug HUD removed */}
 
       <div id="motionBlur" ref={motionBlurRef} />
       <div
@@ -1844,9 +2402,6 @@ function App() {
     type="button"
     className="control-btn turnLeft"
     onPointerDown={(e) => handleControlPointerDown('q', e)}
-    onMouseDown={(e) => handleControlMouseDown('q', e)}
-    onTouchStart={(e) => handleControlTouchStart('q', e)}
-    onClick={(e) => handleControlClick('q', e)}
   >
     {uiText.buttonTurnLeft}
   </button>
@@ -1855,9 +2410,6 @@ function App() {
     type="button"
     className="control-btn forward"
     onPointerDown={(e) => handleControlPointerDown('w', e)}
-    onMouseDown={(e) => handleControlMouseDown('w', e)}
-    onTouchStart={(e) => handleControlTouchStart('w', e)}
-    onClick={(e) => handleControlClick('w', e)}
   >
     {uiText.buttonForward}
   </button>
@@ -1866,9 +2418,6 @@ function App() {
     type="button"
     className="control-btn turnRight"
     onPointerDown={(e) => handleControlPointerDown('e', e)}
-    onMouseDown={(e) => handleControlMouseDown('e', e)}
-    onTouchStart={(e) => handleControlTouchStart('e', e)}
-    onClick={(e) => handleControlClick('e', e)}
   >
     {uiText.buttonTurnRight}
   </button>
@@ -1877,9 +2426,6 @@ function App() {
     type="button"
     className="control-btn backward"
     onPointerDown={(e) => handleControlPointerDown('s', e)}
-    onMouseDown={(e) => handleControlMouseDown('s', e)}
-    onTouchStart={(e) => handleControlTouchStart('s', e)}
-    onClick={(e) => handleControlClick('s', e)}
   >
     {uiText.buttonBackward}
   </button>
