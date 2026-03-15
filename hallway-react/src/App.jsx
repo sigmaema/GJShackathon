@@ -231,6 +231,7 @@ checkAchievementsRef.current = checkAchievements
       primaryAudio.preload = 'auto'
       primaryAudio.muted = isMutedRef.current;
       audioRef.current = primaryAudio
+      primaryAudio.__playPending = false
     }
 
     if (!audioAltRef.current) {
@@ -240,6 +241,7 @@ checkAchievementsRef.current = checkAchievements
       secondaryAudio.preload = 'auto'
       secondaryAudio.muted = isMutedRef.current;
       audioAltRef.current = secondaryAudio
+      secondaryAudio.__playPending = false
     }
   }
 
@@ -315,48 +317,40 @@ checkAchievementsRef.current = checkAchievements
     nextAudio.currentTime = 0
     nextAudio.volume = 0
 
-    if (nextAudio.__playPending) {
-  return Promise.resolve(false)
-}
-if (nextAudio.__playPending) {
-  return Promise.resolve(false)
-}
-nextAudio.__playPending = true
-return nextAudio.play().then(() => {
-  nextAudio.__playPending = false
-  if (transitionToken !== musicTransitionTokenRef.current) {
-    nextAudio.pause()
-    nextAudio.removeAttribute('src')
-    nextAudio.load()
-    nextAudio.volume = AUDIO_BASE_VOLUME
-    return false
-  }
+    return nextAudio.play().then(() => {
+      if (transitionToken !== musicTransitionTokenRef.current) {
+        nextAudio.pause()
+        nextAudio.removeAttribute('src')
+        nextAudio.load()
+        nextAudio.volume = AUDIO_BASE_VOLUME
+        return false
+      }
 
-  audioUnlockedRef.current = true
-  pauseBackgroundNoise(true)
-  fadeAudioVolume(nextAudio, AUDIO_BASE_VOLUME, AUDIO_CROSSFADE_MS)
+      audioUnlockedRef.current = true
+      pauseBackgroundNoise(true)
+      fadeAudioVolume(nextAudio, AUDIO_BASE_VOLUME, AUDIO_CROSSFADE_MS)
 
-  if (activeAudio && activeAudio.src && !activeAudio.paused) {
-    fadeOutAndStopAudio(activeAudio, AUDIO_FADE_OUT_MS, { clearSrc: true, resetVolume: AUDIO_BASE_VOLUME })
-  }
+      if (activeAudio && activeAudio.src && !activeAudio.paused) {
+        fadeOutAndStopAudio(activeAudio, AUDIO_FADE_OUT_MS, { clearSrc: true, resetVolume: AUDIO_BASE_VOLUME })
+      }
 
-  audioRef.current = nextAudio
-  audioAltRef.current = activeAudio
+      audioRef.current = nextAudio
+audioAltRef.current = activeAudio
+activeAudio.__playPending = false 
 
-  if (typeof onReady === 'function') {
-    onReady()
-  }
+      if (typeof onReady === 'function') {
+        onReady()
+      }
 
-  console.log('[audio] crossfade completed', {
-    selectionKey,
-    candidateIndex,
-    src: resolvedTarget,
-  })
-  return true
-}).catch((err) => {
-  nextAudio.__playPending = false
-  throw err
-})
+      console.log('[audio] crossfade completed', {
+        selectionKey,
+        candidateIndex,
+        src: resolvedTarget,
+      })
+      return true
+    }).catch((err) => {
+      throw err
+    })
   }
 
   function ensureBackgroundAudio() {
@@ -2121,15 +2115,16 @@ if (player.position.z <= -46 && checkAchievementsRef.current) {
           const started = startStep(nextAction)
           if (started) {
             const movedAlongHallway = Math.abs(stepAnimation.toPosition.z - stepAnimation.fromPosition.z) > 0.75
-            if (nextAction === 'forward') {
-              if (movedAlongHallway) {
-                galleryStepIndex += 1
-              }
-            } else if (nextAction === 'backward') {
-              if (movedAlongHallway) {
-                galleryStepIndex = Math.max(galleryStepIndex - 1, 0)
-              }
-            }
+            if (nextAction === 'forward' || nextAction === 'backward') {
+  if (movedAlongHallway) {
+    const movingDeeper = stepAnimation.toPosition.z < stepAnimation.fromPosition.z
+    if (movingDeeper) {
+      galleryStepIndex += 1
+    } else {
+      galleryStepIndex = Math.max(galleryStepIndex - 1, 0)
+    }
+  }
+}
           }
           pendingActionRef.current = null
         }

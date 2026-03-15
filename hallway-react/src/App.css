@@ -44,11 +44,11 @@ body {
   display: grid;
   grid-template-columns: repeat(3, 100px);
   gap: 10px;
-  background: rgba(20, 20, 20, 0.85); /* tmavší warehouse vibe */
+  background: transparent;
+  box-shadow: none;
   padding: 20px;
   border-radius: 10px;
   z-index: 10;
-  box-shadow: 0 0 20px rgba(0,0,0,0.5);
 }
 
 button {
